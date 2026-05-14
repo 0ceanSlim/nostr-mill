@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nostr-mill — Multi-Interface Login Layer</title>
+<meta name="description" content="Zero-dependency Web Component for Nostr account access. Drop in one script tag. NIP-07, NIP-46, NIP-55, private key, read-only, new keypair. Fully themeable.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Press+Start+2P&family=VT323&family=Pixelify+Sans:wght@400;500;600;700&family=Comic+Neue:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --page-bg:    #07060e;
+  --surface:    #0f0d1a;
+  --card:       #161328;
+  --border:     #252040;
+  --border-hi:  #352e58;
+  --accent:     oklch(0.67 0.28 282);
+  --accent-dim: oklch(0.67 0.28 282 / 0.12);
+  --teal:       oklch(0.67 0.18 195);
+  --green:      oklch(0.67 0.22 142);
+  --green-dim:  oklch(0.67 0.22 142 / 0.12);
+  --text:       #ede8fc;
+  --text-2:     #b8b0d8;
+  --muted:      #948cb8;
+}
+
+html, body { height: 100%; }
+body {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  background: var(--page-bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: '';
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(rgba(130,80,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(130,80,255,0.04) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(ellipse at top, #000 0%, transparent 70%);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+
+/* ── layout ───────────────────────────────────────────────────────────── */
+.page { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; position: relative; z-index: 1; }
+
+/* ── hero ─────────────────────────────────────────────────────────────── */
+.hero { text-align: center; padding: 20px 0 28px; }
+.hero-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 10px; border-radius: 20px;
+  background: var(--accent-dim); border: 1px solid var(--border-hi);
+  font-size: 11.5px; color: var(--text-2); font-weight: 500;
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 16px;
+}
+.hero-chip-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent);
+}
+.hero h1 {
+  font-size: clamp(34px, 6vw, 60px); font-weight: 700; line-height: 1.0;
+  letter-spacing: -0.04em; margin-bottom: 8px;
+}
+.hero h1 span {
+  font-size: clamp(18px, 2.4vw, 22px); font-weight: 400;
+  color: var(--text-2); letter-spacing: -0.01em;
+  display: inline-block; margin-top: 6px;
+}
+.hero p {
+  max-width: 580px; margin: 14px auto 0;
+  font-size: 15px; color: var(--text-2);
+}
+.hero-badges {
+  display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+  margin-top: 18px;
+}
+.badge-pill {
+  padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 500;
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+/* ── CTA bar ──────────────────────────────────────────────────────────── */
+.cta-row {
+  display: flex; gap: 10px; justify-content: center; align-items: center;
+  margin: 22px 0 8px; flex-wrap: wrap;
+}
+.cta-btn {
+  background: var(--accent); color: #fff; border: none;
+  padding: 11px 20px; border-radius: 10px;
+  font-family: inherit; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: filter 0.15s;
+}
+.cta-btn:hover { filter: brightness(1.12); }
+.cta-btn.secondary {
+  background: transparent; color: var(--text-2);
+  border: 1px solid var(--border-hi);
+}
+
+/* ── section ──────────────────────────────────────────────────────────── */
+.section-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--muted); font-weight: 600; margin: 36px 0 12px;
+}
+
+/* ── method grid ──────────────────────────────────────────────────────── */
+.method-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.method-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 2px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.method-card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+.method-card-icon { font-size: 18px; margin-bottom: 4px; }
+.method-card-name { font-size: 14px; font-weight: 600; }
+.method-card-sub { font-size: 10.5px; font-family: 'JetBrains Mono', monospace; color: var(--muted); margin-bottom: 4px; }
+.method-card-desc { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+
+/* ── showcase grid ─────────────────────────────────────────────────────── */
+.showcase-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+.showcase-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.showcase-card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+.showcase-preview {
+  height: 64px; padding: 10px 14px;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.showcase-preview-name { font-size: 14px; font-weight: 700; line-height: 1.1; }
+.showcase-preview-tag  { font-size: 10.5px; opacity: 0.75; }
+.showcase-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
+.showcase-name { font-size: 14px; font-weight: 600; }
+.showcase-sub { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.showcase-traits { display: flex; flex-wrap: wrap; gap: 4px; }
+.showcase-trait {
+  font-size: 10px; padding: 1px 7px; border-radius: 10px;
+  background: var(--accent-dim); color: var(--accent);
+  border: 1px solid var(--border-hi);
+  font-family: 'JetBrains Mono', monospace;
+}
+.showcase-details summary {
+  font-size: 11px; color: var(--text-2); cursor: pointer;
+  list-style: none; padding: 4px 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  user-select: none;
+}
+.showcase-details summary::-webkit-details-marker { display: none; }
+.showcase-details summary::before { content: '▸'; font-size: 9px; transition: transform 0.15s; }
+.showcase-details[open] summary::before { transform: rotate(90deg); }
+.showcase-details summary:hover { color: var(--text); }
+.showcase-snippet {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text-2); line-height: 1.5; overflow-x: auto; max-height: 160px; margin-top: 4px;
+}
+.showcase-snippet .acc { color: var(--accent); }
+.showcase-snippet .str { color: oklch(0.7 0.2 155); }
+.showcase-snippet .cm  { color: var(--muted); }
+.showcase-try {
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 8px;
+  padding: 9px 12px; font-family: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: filter 0.15s;
+}
+.showcase-try:hover { filter: brightness(1.12); }
+
+/* ── config presets grid ──────────────────────────────────────────────── */
+.config-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+.config-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px;
+  display: flex; flex-direction: column; gap: 10px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.config-card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+.config-name { font-size: 14.5px; font-weight: 600; }
+.config-sub { font-size: 12.5px; color: var(--text-2); margin-top: 2px; line-height: 1.5; }
+.config-snippet {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text-2); line-height: 1.55; overflow-x: auto;
+}
+.config-snippet .acc { color: var(--accent); }
+.config-snippet .str { color: oklch(0.7 0.2 155); }
+.config-snippet .cm  { color: var(--muted); }
+.config-try {
+  background: var(--accent-dim); color: var(--accent);
+  border: 1px solid var(--border-hi); border-radius: 8px;
+  padding: 8px 12px; font-family: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: filter 0.15s;
+}
+.config-try:hover { filter: brightness(1.18); }
+
+/* ── theme grid ───────────────────────────────────────────────────────── */
+.theme-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.theme-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.theme-card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+.theme-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.theme-name { font-size: 14.5px; font-weight: 600; }
+.theme-sub { font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
+.theme-code { font-size: 10.5px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+.theme-swatches { display: flex; gap: 4px; }
+.theme-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.08); }
+.theme-try {
+  background: var(--accent-dim); color: var(--accent);
+  border: 1px solid var(--border-hi); border-radius: 8px;
+  padding: 8px 12px; font-family: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: filter 0.15s;
+}
+.theme-try:hover { filter: brightness(1.18); }
+
+/* ── code section ─────────────────────────────────────────────────────── */
+.code-section {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden;
+}
+.code-tabs {
+  display: flex; border-bottom: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none;
+}
+.code-tabs::-webkit-scrollbar { display: none; }
+.code-tab {
+  background: none; border: none; padding: 14px 20px;
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  color: var(--text-2); cursor: pointer; white-space: nowrap;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.code-tab:hover { color: var(--text); }
+.code-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.code-block { position: relative; }
+.code-block pre {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7;
+  padding: 22px 26px; overflow-x: auto;
+  color: var(--text);
+}
+.code-block .kw  { color: oklch(0.67 0.28 282); }
+.code-block .fn  { color: oklch(0.67 0.18 195); }
+.code-block .str { color: oklch(0.7 0.2 155); }
+.code-block .cm  { color: var(--muted); font-style: italic; }
+.copy-btn {
+  position: absolute; top: 14px; right: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-2); padding: 6px 12px; border-radius: 6px;
+  font-family: inherit; font-size: 12px; cursor: pointer;
+  transition: all 0.15s;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--border-hi); }
+.copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+/* ── token table ──────────────────────────────────────────────────────── */
+.token-table {
+  width: 100%; border-collapse: collapse;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden;
+}
+.token-table th, .token-table td {
+  text-align: left; padding: 12px 18px; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.token-table th {
+  background: var(--surface); font-weight: 600; color: var(--text-2);
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em;
+}
+.token-table td { color: var(--text-2); vertical-align: top; }
+.token-table td:first-child {
+  color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  white-space: nowrap;
+}
+.token-table td:nth-child(2) {
+  color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+}
+.token-table tr:last-child td { border-bottom: none; }
+
+/* ── live result panel ────────────────────────────────────────────────── */
+.result-panel {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 22px;
+}
+.result-empty { color: var(--muted); font-size: 13px; }
+.result-row { display: flex; gap: 10px; margin-bottom: 4px; font-size: 13px; }
+.result-key { color: var(--text-2); font-weight: 500; min-width: 110px; }
+.result-val { color: var(--accent); font-family: 'JetBrains Mono', monospace; word-break: break-all; }
+.result-val.green { color: var(--green); }
+
+/* ── footer ───────────────────────────────────────────────────────────── */
+.footer {
+  margin-top: 50px; padding-top: 22px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; gap: 14px;
+  justify-content: space-between; align-items: center;
+}
+.footer-links { display: flex; gap: 18px; }
+.footer-link { color: var(--text-2); text-decoration: none; font-size: 13.5px; transition: color 0.15s; }
+.footer-link:hover { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- ── Hero ── -->
+  <div class="hero">
+    <div class="hero-chip"><span class="hero-chip-dot"></span>v0.1.0 · MIT License</div>
+    <h1>nostr-mill<br><span>Multi-Interface Login Layer</span></h1>
+    <p>A zero-dependency Web Component for Nostr account access. Drop in one script tag. Supports every signing method. Fully themeable via CSS custom properties.</p>
+    <div class="hero-badges">
+      <span class="badge-pill">🧩 NIP-07</span>
+      <span class="badge-pill">📡 NIP-46</span>
+      <span class="badge-pill">📱 NIP-55</span>
+      <span class="badge-pill">🔑 Private Key</span>
+      <span class="badge-pill">👁 Read Only</span>
+      <span class="badge-pill">✨ Key Generation</span>
+    </div>
+    <div class="cta-row">
+      <button class="cta-btn" onclick="MILL.open({ onConnected: showResult })">Sign In with Nostr →</button>
+      <a class="cta-btn secondary" href="#showcaseGrid">Browse examples</a>
+    </div>
+  </div>
+
+  <!-- ── Live result + actions (only shown after connection) ── -->
+  <div class="result-panel" id="resultPanel" style="display:none">
+    <div id="resultRows"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="theme-try" id="signTestBtn">Sign a test note</button>
+      <button class="theme-try" id="disconnectBtn" style="background:transparent;color:var(--text-2)">Disconnect</button>
+    </div>
+    <pre id="signedEvent" style="display:none;margin-top:10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--green);overflow-x:auto;max-height:200px"></pre>
+  </div>
+
+  <!-- ── Signing Methods ── -->
+  <div class="section-label">Signing Methods</div>
+  <div class="method-grid">
+    <div class="method-card">
+      <div class="method-card-icon">🧩</div>
+      <div class="method-card-name">Browser Extension</div>
+      <div class="method-card-sub">NIP-07</div>
+      <div class="method-card-desc">Signs events inside the extension's isolated sandbox. This app only sees your pubkey and completed signed events.</div>
+    </div>
+    <div class="method-card">
+      <div class="method-card-icon">📡</div>
+      <div class="method-card-name">Remote Signer</div>
+      <div class="method-card-sub">NIP-46 Bunker</div>
+      <div class="method-card-desc">Key stays on your bunker device. Signing requests travel encrypted over a relay. Bunker URL or nostrconnect:// pairing.</div>
+    </div>
+    <div class="method-card">
+      <div class="method-card-icon">📱</div>
+      <div class="method-card-name">Android Signer</div>
+      <div class="method-card-sub">NIP-55 · Amber</div>
+      <div class="method-card-desc">On-device Android intents. No network between your app and the signer. Each event approved in Amber.</div>
+    </div>
+    <div class="method-card">
+      <div class="method-card-icon">🔑</div>
+      <div class="method-card-name">Private Key</div>
+      <div class="method-card-sub">nsec / hex</div>
+      <div class="method-card-desc">AES-256-GCM via PBKDF2. Encrypted ciphertext in sessionStorage — wiped on tab close. Per-kind unlock policies.</div>
+    </div>
+    <div class="method-card">
+      <div class="method-card-icon">👁</div>
+      <div class="method-card-name">Read Only</div>
+      <div class="method-card-sub">npub / hex pubkey</div>
+      <div class="method-card-desc">Browse feed, profiles, threads. Cannot sign, post, react, or zap. Zero key material handled.</div>
+    </div>
+    <div class="method-card">
+      <div class="method-card-icon">✨</div>
+      <div class="method-card-name">New Identity</div>
+      <div class="method-card-sub">Generate keys</div>
+      <div class="method-card-desc">CSPRNG keypair via nostr-tools. Guided backup flow with confirmation checklist before activating.</div>
+    </div>
+  </div>
+
+  <!-- ── Showcase: combined theme + layout + options examples ── -->
+  <div class="section-label">Showcase — six combined examples</div>
+  <p style="color:var(--text-2);font-size:13.5px;margin-bottom:14px;max-width:720px">
+    Each card combines a different theme, layout, density, callout treatment, and method configuration. Click any to open a fully-styled, fully-configured signer modal — these are real, copy-pasteable patterns.
+  </p>
+  <div class="showcase-grid" id="showcaseGrid"></div>
+
+  <!-- ── Built-in themes — single-line quick picks ── -->
+  <div class="section-label">Or pick a built-in theme</div>
+  <div class="theme-grid" id="themeGrid"></div>
+
+  <!-- ── API Usage ── -->
+  <div class="section-label">API Usage</div>
+  <div class="code-section">
+    <div class="code-tabs" id="codeTabs"></div>
+    <div class="code-block">
+      <button class="copy-btn" id="copyBtn">Copy</button>
+      <pre id="codePre"></pre>
+    </div>
+  </div>
+
+  <!-- ── CSS Token Reference (collapsed by default) ── -->
+  <details style="margin-top:36px">
+    <summary style="font-size:11px;text-transform:uppercase;letter-spacing:0.14em;color:var(--muted);font-weight:600;cursor:pointer;padding:6px 0;list-style:none;display:inline-flex;align-items:center;gap:6px;user-select:none">
+      <span style="font-size:9px">▸</span>CSS Custom Properties (29 tokens)
+    </summary>
+    <table class="token-table" style="margin-top:10px">
+      <thead><tr><th>Variable</th><th>Default (dark)</th><th>Description</th></tr></thead>
+      <tbody id="tokenTableBody"></tbody>
+    </table>
+  </details>
+
+  <!-- ── Footer ── -->
+  <div class="footer">
+    <div style="font-size:13px;color:var(--muted)">nostr-mill · MIT License · one runtime dep (nostr-tools)</div>
+    <div class="footer-links">
+      <a class="footer-link" href="https://github.com/0ceanslim/nostr-mill" target="_blank">GitHub</a>
+      <a class="footer-link" href="https://www.npmjs.com/package/nostr-mill" target="_blank">npm</a>
+      <a class="footer-link" href="https://cdn.jsdelivr.net/npm/nostr-mill/dist/mill.umd.min.js" target="_blank">CDN</a>
+    </div>
+  </div>
+
+</div>
+
+<!-- Mill itself -->
+<script src="../dist/mill.umd.js"></script>
+
+<script>
+// ── Built-in themes ──────────────────────────────────────────────────────────
+const BUILT_IN_THEMES = [
+  { id: 'dark',    name: 'Dark',    sub: 'Default · deep purple',     swatches: ['#09080f', '#100e1b', '#7c5cff', '#ede8fc'] },
+  { id: 'light',   name: 'Light',   sub: 'Clean · accessible',        swatches: ['#f5f3ff', '#ffffff', '#5232c5', '#1a1630'] },
+  { id: 'minimal', name: 'Minimal', sub: 'Monochrome · system fonts', swatches: ['#fafafa', '#ffffff', '#111111', '#555555'] },
+  { id: 'grain',   name: 'Grain',   sub: 'Branded · forest green',    swatches: ['#0d0f0c', '#141710', '#42a26b', '#e8f0e4'] },
+];
+
+// ── Custom themes (extreme overrides demonstrating themeability) ────────────
+const CUSTOM_THEMES = {
+  pubkeyQuest: {
+    name: 'Pubkey Quest', sub: 'Pixel-art · dark', swatches: ['#1e1e1e', '#2d2d2d', '#569cd6', '#d4d4d4'],
+    tokens: {
+      '--mill-bg':'rgb(30,30,30)','--mill-surface':'rgb(45,45,45)','--mill-card':'rgb(45,45,45)','--mill-card-hover':'rgb(60,60,60)',
+      '--mill-inset':'rgb(30,30,30)','--mill-inset-strong':'rgb(20,20,20)','--mill-overlay':'rgba(0,0,0,0.7)',
+      '--mill-border':'rgb(60,60,60)','--mill-border-light':'rgb(86,156,214)',
+      '--mill-accent':'rgb(86,156,214)','--mill-accent-hover':'rgb(120,180,230)','--mill-accent-dim':'rgba(86,156,214,0.18)',
+      '--mill-teal':'rgb(78,201,176)','--mill-teal-dim':'rgba(78,201,176,0.18)',
+      '--mill-text':'rgb(212,212,212)','--mill-text-secondary':'rgb(180,180,180)','--mill-muted':'rgb(110,110,110)',
+      '--mill-danger':'rgb(244,71,71)','--mill-danger-dim':'rgba(244,71,71,0.18)',
+      '--mill-warning':'rgb(220,170,50)','--mill-warning-dim':'rgba(220,170,50,0.18)',
+      '--mill-success':'rgb(106,206,106)','--mill-success-dim':'rgba(106,206,106,0.18)',
+      '--mill-radius':'0px','--mill-border-width':'2px','--mill-border-style':'solid',
+      '--mill-shadow':'4px 4px 0 0 rgb(20,20,20), 0 0 0 2px rgb(86,156,214)',
+      '--mill-font':'"Dogica","Pixelify Sans","Consolas",monospace',
+      '--mill-font-mono':'"Dogica Pixel","Pixelify Sans","Consolas",monospace',
+    },
+  },
+  terminal: {
+    name: 'Terminal', sub: 'Phosphor green CRT', swatches: ['#000','#001a00','#00ff00','#88ff88'],
+    tokens: {
+      '--mill-bg':'#000','--mill-surface':'#000','--mill-card':'#001a00','--mill-card-hover':'#003300',
+      '--mill-inset':'#001100','--mill-inset-strong':'#000800','--mill-overlay':'rgba(0,40,0,0.8)',
+      '--mill-border':'#00aa00','--mill-border-light':'#00ff00',
+      '--mill-accent':'#00ff00','--mill-accent-hover':'#66ff66','--mill-accent-dim':'rgba(0,255,0,0.18)',
+      '--mill-teal':'#00cccc','--mill-teal-dim':'rgba(0,204,204,0.18)',
+      '--mill-text':'#00ff00','--mill-text-secondary':'#88ff88','--mill-muted':'#448844',
+      '--mill-danger':'#ff3333','--mill-danger-dim':'rgba(255,51,51,0.2)',
+      '--mill-warning':'#ffcc00','--mill-warning-dim':'rgba(255,204,0,0.2)',
+      '--mill-success':'#00ff00','--mill-success-dim':'rgba(0,255,0,0.2)',
+      '--mill-radius':'2px','--mill-border-width':'1px','--mill-border-style':'solid',
+      '--mill-shadow':'0 0 30px rgba(0,255,0,0.4), 0 0 80px rgba(0,255,0,0.2)',
+      '--mill-font':'"VT323","Fira Code","Cascadia Mono",monospace',
+      '--mill-font-mono':'"VT323","Fira Code",monospace',
+    },
+  },
+  candy: {
+    name: 'Candy', sub: 'Pastel · soft glow', swatches: ['#fff0fa','#ffe4f3','#ff3399','#3a0030'],
+    tokens: {
+      '--mill-bg':'#fff0fa','--mill-surface':'#fff7fc','--mill-card':'#ffe4f3','--mill-card-hover':'#ffcfe7',
+      '--mill-inset':'rgba(200,80,180,0.07)','--mill-inset-strong':'rgba(200,80,180,0.13)','--mill-overlay':'rgba(255,182,222,0.6)',
+      '--mill-border':'#ffc6e1','--mill-border-light':'#ff7fbb',
+      '--mill-accent':'#ff3399','--mill-accent-hover':'#ff66b8','--mill-accent-dim':'rgba(255,51,153,0.13)',
+      '--mill-teal':'#a060ff','--mill-teal-dim':'rgba(160,96,255,0.13)',
+      '--mill-text':'#3a0030','--mill-text-secondary':'#8a3070','--mill-muted':'#c898b8',
+      '--mill-danger':'#cc0044','--mill-danger-dim':'rgba(204,0,68,0.13)',
+      '--mill-warning':'#d4880a','--mill-warning-dim':'rgba(212,136,10,0.13)',
+      '--mill-success':'#16a34a','--mill-success-dim':'rgba(22,163,74,0.13)',
+      '--mill-radius':'24px','--mill-border-width':'2px','--mill-border-style':'solid',
+      '--mill-shadow':'0 12px 40px rgba(255,51,153,0.3), 0 0 80px rgba(160,96,255,0.15)',
+      '--mill-font':'"Comic Neue","Comic Sans MS",cursive,sans-serif',
+      '--mill-font-mono':'"Comic Mono","Comic Sans MS",monospace',
+    },
+  },
+  brutalist: {
+    name: 'Brutalist', sub: 'Hard offset · bold borders', swatches: ['#ffff00','#ffffff','#ff0000','#000'],
+    tokens: {
+      '--mill-bg':'#ffff00','--mill-surface':'#ffffff','--mill-card':'#ffffff','--mill-card-hover':'#f0f0f0',
+      '--mill-inset':'#000','--mill-inset-strong':'#000','--mill-overlay':'rgba(0,0,0,0.6)',
+      '--mill-border':'#000','--mill-border-light':'#000',
+      '--mill-accent':'#ff0000','--mill-accent-hover':'#cc0000','--mill-accent-dim':'#ffe0e0',
+      '--mill-teal':'#0000ff','--mill-teal-dim':'#e0e0ff',
+      '--mill-text':'#000','--mill-text-secondary':'#000','--mill-muted':'#444',
+      '--mill-danger':'#ff0000','--mill-danger-dim':'#ffe0e0',
+      '--mill-warning':'#ff8800','--mill-warning-dim':'#ffe8d0',
+      '--mill-success':'#008800','--mill-success-dim':'#e0ffe0',
+      '--mill-radius':'0px','--mill-border-width':'3px','--mill-border-style':'solid',
+      '--mill-shadow':'8px 8px 0 #000',
+      '--mill-font':'"Helvetica Neue",Helvetica,Arial,sans-serif',
+      '--mill-font-mono':'"Andale Mono","Courier New",monospace',
+    },
+  },
+};
+
+// ── Showcase: each card combines a theme + layout + options ────────────────
+const SHOWCASES = [
+  {
+    name: 'Pixel Quest',
+    sub: 'Pubkey-quest aesthetic + grid layout. Custom labels rebrand the methods for an in-game feel.',
+    traits: ['theme: pubkeyQuest', 'layout: grid', 'callout: nip07', 'methods: 3'],
+    preview: { bg: 'rgb(45,45,45)', text: 'rgb(212,212,212)', accent: 'rgb(86,156,214)', font: '"VT323", monospace', label: 'PIXEL QUEST', tag: '> select hero method' },
+    snippet: `MILL.<span class="acc">open</span>({
+  theme: pubkeyQuestTokens,
+  layout: <span class="str">'grid'</span>,
+  callout: <span class="str">'nip07'</span>,
+  methods: [
+    { id: <span class="str">'nip07'</span>, label: <span class="str">'Hero Extension'</span>, icon: <span class="str">'⚔️'</span>, secLabel: <span class="str">'Recommended'</span> },
+    { id: <span class="str">'nip46'</span>, label: <span class="str">'Remote Tome'</span>, icon: <span class="str">'📜'</span> },
+    { id: <span class="str">'newkey'</span>, label: <span class="str">'New Adventurer'</span>, icon: <span class="str">'✨'</span> },
+  ],
+});`,
+    open: () => MILL.open({
+      theme: CUSTOM_THEMES.pubkeyQuest.tokens,
+      layout: 'grid',
+      callout: 'nip07',
+      methods: [
+        { id: 'nip07',  label: 'Hero Extension',     icon: '⚔️', secLabel: 'Recommended', secColor: 'rgb(106,206,106)' },
+        { id: 'nip46',  label: 'Remote Tome',     icon: '📜' },
+        { id: 'newkey', label: 'New Adventurer',  icon: '✨' },
+      ],
+      onConnected: showResult,
+    }),
+  },
+  {
+    name: 'Boutique Brutalist',
+    sub: 'Yellow + offset shadow + thick black borders. Compact density, no callout, only NIP-07 and a brand-new ID.',
+    traits: ['theme: brutalist', 'density: compact', 'callout: false', 'methods: 2'],
+    preview: { bg: '#ffffff', text: '#000', accent: '#ff0000', font: '"Helvetica Neue", sans-serif', label: 'BOUTIQUE', tag: 'NEW · STRICT · LOUD' },
+    snippet: `MILL.<span class="acc">open</span>({
+  theme: brutalistTokens,
+  density: <span class="str">'compact'</span>,
+  callout: <span class="str">false</span>,
+  methods: [<span class="str">'nip07'</span>, <span class="str">'newkey'</span>],
+});`,
+    open: () => MILL.open({
+      theme: CUSTOM_THEMES.brutalist.tokens,
+      density: 'compact',
+      callout: false,
+      methods: ['nip07', 'newkey'],
+      onConnected: showResult,
+    }),
+  },
+  {
+    name: 'Terminal CRT',
+    sub: 'Phosphor green on black, all VT323. Privacy-only methods (no nsec, no read-only). Compact + grid for max retro density.',
+    traits: ['theme: terminal', 'density: compact', 'layout: grid', 'methods: 2'],
+    preview: { bg: '#000', text: '#00ff00', accent: '#00ff00', font: '"VT323", monospace', label: '$ MILL_LOGIN', tag: '> awaiting input...' },
+    snippet: `MILL.<span class="acc">open</span>({
+  theme: terminalTokens,
+  density: <span class="str">'compact'</span>,
+  layout: <span class="str">'grid'</span>,
+  methods: [<span class="str">'nip07'</span>, <span class="str">'nip46'</span>],
+});`,
+    open: () => MILL.open({
+      theme: CUSTOM_THEMES.terminal.tokens,
+      density: 'compact',
+      layout: 'grid',
+      methods: ['nip07', 'nip46'],
+      onConnected: showResult,
+    }),
+  },
+  {
+    name: 'Candy Cloud',
+    sub: 'Pastel pink + Comic Neue + 24px radius. Simplified flow for casual onboarding — three clear options.',
+    traits: ['theme: candy', 'callout: newkey', 'methods: 3'],
+    preview: { bg: '#ffe4f3', text: '#3a0030', accent: '#ff3399', font: '"Comic Neue", cursive', label: 'Candy Cloud', tag: 'sweet & easy ✿' },
+    snippet: `MILL.<span class="acc">open</span>({
+  theme: candyTokens,
+  methods: [<span class="str">'newkey'</span>, <span class="str">'nip07'</span>, <span class="str">'readonly'</span>],
+});`,
+    open: () => MILL.open({
+      theme: CUSTOM_THEMES.candy.tokens,
+      methods: ['newkey', 'nip07', 'readonly'],
+      onConnected: showResult,
+    }),
+  },
+  {
+    name: 'Minimal Onboarding',
+    sub: 'System fonts, monochrome, single-method flow: just generate a key. Perfect for "Sign up" buttons that hide the complexity.',
+    traits: ['theme: minimal', 'callout: false', 'methods: 1'],
+    preview: { bg: '#fafafa', text: '#111', accent: '#111', font: 'Inter, system-ui, sans-serif', label: 'minimal.', tag: 'Just sign up' },
+    snippet: `MILL.<span class="acc">open</span>({
+  theme: <span class="str">'minimal'</span>,
+  callout: <span class="str">false</span>,
+  methods: [<span class="str">'newkey'</span>],
+});`,
+    open: () => MILL.open({
+      theme: 'minimal',
+      callout: false,
+      methods: ['newkey'],
+      onConnected: showResult,
+    }),
+  },
+  {
+    name: 'Server-Backed (with Amber)',
+    sub: 'Default theme with NIP-55 (Amber direct) explicitly enabled. NIP-55 is hidden from the default modal because the browser ⇄ Amber callback handoff is unreliable on mobile web — for production use you need a server-side /amber-callback route to capture the result. For static/no-server sites, prefer NIP-46 with Amber-as-bunker (the QR path inside Remote Signer).',
+    traits: ['theme: dark', 'callout: nip07', 'methods: 5', 'requires: server callback'],
+    preview: { bg: '#100e1b', text: '#ede8fc', accent: 'oklch(0.67 0.28 282)', font: '"Space Grotesk", sans-serif', label: 'SERVER-BACKED', tag: '+amber · /amber-callback' },
+    snippet: `<span class="cm">// NIP-55 is opt-in. In production, your server must</span>
+<span class="cm">// implement /amber-callback to capture ?event= and</span>
+<span class="cm">// create the user's session. See the README for a Go example.</span>
+MILL.<span class="acc">open</span>({
+  callout: <span class="str">'nip07'</span>,
+  methods: [<span class="str">'nip07'</span>, <span class="str">'nip46'</span>, <span class="str">'nip55'</span>, <span class="str">'newkey'</span>, <span class="str">'readonly'</span>],
+});
+
+<span class="cm">// On mobile web, the more reliable path is NIP-46 with</span>
+<span class="cm">// Amber as a bunker (the QR option inside Remote Signer).</span>
+<span class="cm">// That works without any server-side glue.</span>`,
+    open: () => MILL.open({
+      callout: 'nip07',
+      methods: ['nip07', 'nip46', 'nip55', 'newkey', 'readonly'],
+      onConnected: showResult,
+    }),
+  },
+];
+
+// ── Method config presets (kept for reference only — no UI section) ─────────
+const CONFIG_PRESETS = [
+  {
+    name: 'Defaults',
+    sub: 'All six methods. New Identity callout at top, then five sign-in cards.',
+    snippet: `<span class="cm">// no methods config</span>
+MILL.<span class="acc">open</span>({ <span class="acc">onConnected</span>: cb });`,
+    methods: undefined,
+  },
+  {
+    name: 'Privacy-first',
+    sub: 'Only the methods that never expose the private key to this app.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'nip07'</span>, <span class="str">'nip46'</span>, <span class="str">'nip55'</span>, <span class="str">'readonly'</span>],
+});`,
+    methods: ['nip07', 'nip46', 'nip55', 'readonly'],
+  },
+  {
+    name: 'Beginner-friendly',
+    sub: 'Just the easy ones: generate a key or use a browser extension.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'newkey'</span>, <span class="str">'nip07'</span>],
+});`,
+    methods: ['newkey', 'nip07'],
+  },
+  {
+    name: 'No private-key',
+    sub: 'Hide the raw nsec entry — push users to safer flows.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'nip07'</span>, <span class="str">'nip46'</span>, <span class="str">'nip55'</span>, <span class="str">'newkey'</span>, <span class="str">'readonly'</span>],
+});`,
+    methods: ['nip07', 'nip46', 'nip55', 'newkey', 'readonly'],
+  },
+  {
+    name: 'Reordered',
+    sub: 'Put NIP-46 first, NIP-07 second, hide everything else.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'nip46'</span>, <span class="str">'nip07'</span>],
+});`,
+    methods: ['nip46', 'nip07'],
+  },
+  {
+    name: 'Custom labels & icons',
+    sub: 'Override per-method labels, icons, and security badges.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [
+    { id: <span class="str">'nip07'</span>, label: <span class="str">'My Wallet'</span>, icon: <span class="str">'⚡'</span>,
+      secLabel: <span class="str">'Recommended'</span> },
+    { id: <span class="str">'nip46'</span>, label: <span class="str">'My Bunker'</span>, icon: <span class="str">'🏰'</span> },
+    { id: <span class="str">'newkey'</span>, label: <span class="str">'Brand New User'</span>, icon: <span class="str">'🌱'</span> },
+  ],
+});`,
+    methods: [
+      { id: 'nip07',   label: 'My Wallet',       icon: '⚡', secLabel: 'Recommended', secColor: 'var(--mill-success)' },
+      { id: 'nip46',   label: 'My Bunker',       icon: '🏰' },
+      { id: 'newkey',  label: 'Brand New User',  icon: '🌱' },
+    ],
+  },
+  {
+    name: 'Single-method',
+    sub: 'NIP-07 only — for apps that mandate a browser extension.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'nip07'</span>],
+});`,
+    methods: ['nip07'],
+  },
+  {
+    name: 'Read-only audit',
+    sub: 'Public-feed-only viewer. No signing capability at all.',
+    snippet: `MILL.<span class="acc">open</span>({
+  methods: [<span class="str">'readonly'</span>],
+});`,
+    methods: ['readonly'],
+  },
+  {
+    name: 'Compact density',
+    sub: 'Smaller cards, no descriptions or security badges. Ideal in cramped modals.',
+    snippet: `MILL.<span class="acc">open</span>({
+  density: <span class="str">'compact'</span>,
+});`,
+    methods: undefined,
+    extra: { density: 'compact' },
+  },
+  {
+    name: 'Grid layout',
+    sub: 'Methods rendered as a 2-column grid instead of a vertical list.',
+    snippet: `MILL.<span class="acc">open</span>({
+  layout: <span class="str">'grid'</span>,
+});`,
+    methods: undefined,
+    extra: { layout: 'grid' },
+  },
+  {
+    name: 'Compact + Grid',
+    sub: 'Tightest possible layout: small grid cards. Great for embedded sidebars.',
+    snippet: `MILL.<span class="acc">open</span>({
+  density: <span class="str">'compact'</span>,
+  layout:  <span class="str">'grid'</span>,
+});`,
+    methods: undefined,
+    extra: { density: 'compact', layout: 'grid' },
+  },
+  {
+    name: 'No callout',
+    sub: '“I’m new here!” banner removed; New Identity becomes a regular sign-in card.',
+    snippet: `MILL.<span class="acc">open</span>({
+  callout: <span class="str">false</span>,
+});`,
+    methods: undefined,
+    extra: { callout: false },
+  },
+  {
+    name: 'NIP-46 callout',
+    sub: 'Feature Remote Signer at the top instead of New Identity.',
+    snippet: `MILL.<span class="acc">open</span>({
+  callout: <span class="str">'nip46'</span>,
+});`,
+    methods: undefined,
+    extra: { callout: 'nip46' },
+  },
+];
+
+// Render showcase cards (theme + layout + method combos)
+const showcaseGrid = document.getElementById('showcaseGrid');
+SHOWCASES.forEach(s => {
+  const card = document.createElement('div');
+  card.className = 'showcase-card';
+  card.innerHTML = `
+    <div class="showcase-preview" style="background:${s.preview.bg};color:${s.preview.text};font-family:${s.preview.font}">
+      <div class="showcase-preview-name" style="color:${s.preview.accent}">${s.preview.label}</div>
+      <div class="showcase-preview-tag">${s.preview.tag}</div>
+    </div>
+    <div class="showcase-body">
+      <div>
+        <div class="showcase-name">${s.name}</div>
+        <div class="showcase-sub">${s.sub}</div>
+      </div>
+      <div class="showcase-traits">${s.traits.map(t => `<span class="showcase-trait">${t}</span>`).join('')}</div>
+      <button class="showcase-try">Open this signer →</button>
+      <details class="showcase-details">
+        <summary>Show code</summary>
+        <div class="showcase-snippet">${s.snippet}</div>
+      </details>
+    </div>
+  `;
+  card.querySelector('.showcase-try').onclick = s.open;
+  showcaseGrid.appendChild(card);
+});
+
+// ── Render theme cards ───────────────────────────────────────────────────────
+function renderThemeCards(container, themes, opener) {
+  themes.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'theme-card';
+    card.innerHTML = `
+      <div class="theme-card-header">
+        <div>
+          <div class="theme-name">${t.name}</div>
+          <div class="theme-sub">${t.sub}</div>
+        </div>
+        <code class="theme-code">${t.id ? `'${t.id}'` : 'custom'}</code>
+      </div>
+      <div class="theme-swatches">
+        ${t.swatches.map(c => `<div class="theme-swatch" style="background:${c}"></div>`).join('')}
+      </div>
+      <button class="theme-try">Open with this theme →</button>
+    `;
+    card.querySelector('.theme-try').onclick = () => opener(t);
+    container.appendChild(card);
+  });
+}
+
+renderThemeCards(document.getElementById('themeGrid'), BUILT_IN_THEMES, t => MILL.open({ theme: t.id, onConnected: showResult }));
+
+// ── Live result panel ────────────────────────────────────────────────────────
+let signer = null;
+const resultPanel = document.getElementById('resultPanel');
+const resultRows = document.getElementById('resultRows');
+const signedEvent = document.getElementById('signedEvent');
+const signTestBtn = document.getElementById('signTestBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+
+function showResult(result) {
+  signer = result.signer;
+  resultPanel.style.display = 'block';
+  resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  resultRows.innerHTML = `
+    <div class="result-row"><span class="result-key">method</span><span class="result-val green">${result.method}</span></div>
+    <div class="result-row"><span class="result-key">pubkey</span><span class="result-val">${result.pubkey}</span></div>
+    <div class="result-row"><span class="result-key">npub</span><span class="result-val">${result.signer?.npub || '—'}</span></div>
+    <div class="result-row"><span class="result-key">canSign</span><span class="result-val ${result.signer?.canSign?'green':''}">${result.signer?.canSign}</span></div>
+  `;
+  signTestBtn.disabled = !result.signer?.canSign;
+  signTestBtn.style.opacity = result.signer?.canSign ? '1' : '0.4';
+  signedEvent.style.display = 'none';
+}
+
+signTestBtn.onclick = async () => {
+  if (!signer) return;
+  try {
+    const result = await signer.signEvent({
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: 'Hello from nostr-mill demo — ' + new Date().toISOString(),
+      pubkey: signer.pubkey,
+    });
+    signedEvent.style.display = 'block';
+    signedEvent.style.color = 'var(--green)';
+    signedEvent.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    signedEvent.style.display = 'block';
+    signedEvent.style.color = '#f87171';
+    signedEvent.textContent = 'ERROR: ' + (e.message || e);
+  }
+};
+
+disconnectBtn.onclick = () => {
+  try { signer?.disconnect?.(); } catch {}
+  signer = null;
+  resultPanel.style.display = 'none';
+  signedEvent.style.display = 'none';
+};
+
+// ── Code tabs ────────────────────────────────────────────────────────────────
+const SNIPPETS = {
+  cdn: `<span class="cm">&lt;!-- Load from jsDelivr or your own CDN --&gt;</span>
+<span class="kw">&lt;script</span> <span class="fn">src</span>=<span class="str">"https://cdn.jsdelivr.net/npm/nostr-mill/dist/mill.umd.min.js"</span><span class="kw">&gt;&lt;/script&gt;</span>
+
+<span class="kw">&lt;button</span> <span class="fn">onclick</span>=<span class="str">"MILL.open({ onConnected: handleSignIn })"</span><span class="kw">&gt;</span>
+  Sign In with Nostr
+<span class="kw">&lt;/button&gt;</span>
+
+<span class="kw">&lt;script&gt;</span>
+  <span class="kw">async function</span> <span class="fn">handleSignIn</span>(result) {
+    console.<span class="fn">log</span>(result.method);   <span class="cm">// 'nip07' | 'nip46' | ...</span>
+    console.<span class="fn">log</span>(result.pubkey);   <span class="cm">// hex pubkey</span>
+    <span class="cm">// result.signer.signEvent(unsignedEvent) returns a signed event</span>
+    <span class="cm">// result.signer is also window.nostr-compatible</span>
+    <span class="kw">const</span> evt = <span class="kw">await</span> result.signer.<span class="fn">signEvent</span>({
+      kind: <span class="str">1</span>, created_at: Math.<span class="fn">floor</span>(Date.<span class="fn">now</span>() / <span class="str">1000</span>),
+      tags: [], content: <span class="str">'gm'</span>, pubkey: result.pubkey,
+    });
+  }
+<span class="kw">&lt;/script&gt;</span>`,
+
+  esm: `<span class="kw">import</span> MILL <span class="kw">from</span> <span class="str">'nostr-mill'</span>;
+
+MILL.<span class="fn">open</span>({
+  theme: <span class="str">'dark'</span>,
+  <span class="fn">onConnected</span>(result) {
+    <span class="cm">// result.method   — 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'newkey' | 'readonly'</span>
+    <span class="cm">// result.pubkey   — hex pubkey</span>
+    <span class="cm">// result.signer   — uniform { signEvent, nip04, nip44, disconnect, ... }</span>
+    myApp.<span class="fn">signIn</span>(result);
+
+    <span class="cm">// Optional: install as window.nostr so existing nostr code Just Works</span>
+    MILL.<span class="fn">installAsWindowNostr</span>(result.signer);
+  },
+  <span class="fn">onClose</span>() { console.<span class="fn">log</span>(<span class="str">'dismissed'</span>); },
+});`,
+
+  wc: `<span class="cm">&lt;!-- Use as a Web Component anywhere in your DOM --&gt;</span>
+<span class="kw">&lt;nostr-signer</span> <span class="fn">id</span>=<span class="str">"signer"</span> <span class="fn">theme</span>=<span class="str">"dark"</span><span class="kw">&gt;&lt;/nostr-signer&gt;</span>
+
+<span class="kw">&lt;script&gt;</span>
+  <span class="kw">const</span> el = document.<span class="fn">getElementById</span>(<span class="str">'signer'</span>);
+
+  <span class="cm">// Open programmatically</span>
+  el.<span class="fn">open</span>({ <span class="fn">onConnected</span>: r =&gt; console.<span class="fn">log</span>(r) });
+
+  <span class="cm">// Or listen to events</span>
+  el.<span class="fn">addEventListener</span>(<span class="str">'mill:connected'</span>, e =&gt; {
+    <span class="kw">const</span> { method, pubkey, signer } = e.detail;
+  });
+  el.<span class="fn">addEventListener</span>(<span class="str">'mill:disconnected'</span>, () =&gt; { ... });
+<span class="kw">&lt;/script&gt;</span>`,
+
+  theme: `<span class="cm">// Built-in themes: 'dark', 'light', 'minimal', 'grain'</span>
+MILL.<span class="fn">open</span>({ theme: <span class="str">'grain'</span> });
+
+<span class="cm">// Or pass a partial token object — merged onto the dark baseline</span>
+MILL.<span class="fn">open</span>({
+  theme: {
+    <span class="str">'--mill-accent'</span>:       <span class="str">'#ff6b35'</span>,
+    <span class="str">'--mill-bg'</span>:           <span class="str">'#0f0f0f'</span>,
+    <span class="str">'--mill-radius'</span>:       <span class="str">'4px'</span>,
+    <span class="str">'--mill-font'</span>:         <span class="str">"'IBM Plex Sans', sans-serif"</span>,
+    <span class="str">'--mill-shadow'</span>:       <span class="str">'8px 8px 0 #000'</span>,    <span class="cm">// neobrutalist</span>
+    <span class="str">'--mill-border-style'</span>: <span class="str">'solid'</span>,
+    <span class="str">'--mill-border-width'</span>: <span class="str">'2px'</span>,
+  },
+});
+
+<span class="cm">// Or use the brandTheme() helper — pass just a few inputs</span>
+<span class="kw">import</span> { brandTheme } <span class="kw">from</span> <span class="str">'nostr-mill/themes'</span>;
+MILL.<span class="fn">open</span>({ theme: <span class="fn">brandTheme</span>({ accent: <span class="str">'#7c3aed'</span>, radius: <span class="str">'6px'</span> }) });`,
+
+  methods: `<span class="cm">// Show only specific methods (and reorder them)</span>
+MILL.<span class="fn">open</span>({
+  methods: [<span class="str">'nip07'</span>, <span class="str">'nip46'</span>, <span class="str">'newkey'</span>],
+  <span class="fn">onConnected</span>: handleSignIn,
+});
+
+<span class="cm">// Override built-in fields per-method</span>
+MILL.<span class="fn">open</span>({
+  methods: [
+    <span class="str">'nip07'</span>,
+    { id: <span class="str">'nip46'</span>, label: <span class="str">'My Bunker'</span>, icon: <span class="str">'🏰'</span>, secLabel: <span class="str">'Recommended'</span> },
+    <span class="str">'newkey'</span>,
+  ],
+});`,
+
+  layout: `<span class="cm">// Compact density: smaller cards, no descriptions/badges</span>
+MILL.<span class="fn">open</span>({ density: <span class="str">'compact'</span> });
+
+<span class="cm">// Grid layout: 2-column auto-fit grid instead of vertical list</span>
+MILL.<span class="fn">open</span>({ layout: <span class="str">'grid'</span> });
+
+<span class="cm">// Both — tightest possible layout</span>
+MILL.<span class="fn">open</span>({ density: <span class="str">'compact'</span>, layout: <span class="str">'grid'</span> });
+
+<span class="cm">// Disable the "I'm new here!" callout entirely</span>
+MILL.<span class="fn">open</span>({ callout: <span class="str">false</span> });
+
+<span class="cm">// Or feature a different method as the top callout</span>
+MILL.<span class="fn">open</span>({ callout: <span class="str">'nip46'</span> });`,
+};
+
+const TABS = [
+  { id: 'cdn',     label: 'Script Tag / CDN' },
+  { id: 'esm',     label: 'ESM / Bundler' },
+  { id: 'wc',      label: 'Web Component' },
+  { id: 'theme',   label: 'Custom Theme' },
+  { id: 'methods', label: 'Method Config' },
+  { id: 'layout',  label: 'Layout & Callout' },
+];
+
+const tabsEl = document.getElementById('codeTabs');
+const codePre = document.getElementById('codePre');
+let activeTab = 'cdn';
+
+function renderTabs() {
+  tabsEl.innerHTML = '';
+  TABS.forEach(t => {
+    const b = document.createElement('button');
+    b.className = 'code-tab' + (t.id === activeTab ? ' active' : '');
+    b.textContent = t.label;
+    b.onclick = () => { activeTab = t.id; renderTabs(); codePre.innerHTML = SNIPPETS[t.id]; };
+    tabsEl.appendChild(b);
+  });
+}
+renderTabs();
+codePre.innerHTML = SNIPPETS[activeTab];
+
+// ── Copy button ──────────────────────────────────────────────────────────────
+document.getElementById('copyBtn').onclick = function() {
+  const text = codePre.innerText;
+  navigator.clipboard.writeText(text);
+  this.textContent = '✓ Copied';
+  this.classList.add('copied');
+  setTimeout(() => { this.textContent = 'Copy'; this.classList.remove('copied'); }, 1800);
+};
+
+// ── CSS variable reference table ─────────────────────────────────────────────
+const TOKEN_DOCS = {
+  '--mill-bg':             ['#09080f',                            'Modal backdrop layer color'],
+  '--mill-surface':        ['#100e1b',                            'Modal surface (the card itself)'],
+  '--mill-card':           ['#181528',                            'Method-card background'],
+  '--mill-card-hover':     ['#1f1c35',                            'Method-card hover'],
+  '--mill-inset':          ['rgba(0,0,0,0.25)',                   'Nested-surface tint (inputs, pill containers)'],
+  '--mill-inset-strong':   ['rgba(0,0,0,0.35)',                   'Stronger nested tint (key boxes)'],
+  '--mill-overlay':        ['rgba(4,3,10,0.78)',                  'Modal backdrop overlay'],
+  '--mill-border':         ['#2a2544',                            'Default border'],
+  '--mill-border-light':   ['#3e3860',                            'Highlighted border (focus, separator)'],
+  '--mill-accent':         ['oklch(0.67 0.28 282)',               'Primary accent'],
+  '--mill-accent-hover':   ['oklch(0.73 0.28 282)',               'Accent on hover'],
+  '--mill-accent-dim':     ['oklch(0.67 0.28 282 / 0.13)',        'Accent tint background'],
+  '--mill-teal':           ['oklch(0.67 0.18 195)',               'Secondary accent'],
+  '--mill-teal-dim':       ['oklch(0.67 0.18 195 / 0.13)',        'Secondary tint'],
+  '--mill-text':           ['#ede8fc',                            'Primary text'],
+  '--mill-text-secondary': ['#9d94c0',                            'Secondary text'],
+  '--mill-muted':          ['#5e5880',                            'Muted / placeholder text'],
+  '--mill-danger':         ['oklch(0.65 0.24 15)',                'Error / danger'],
+  '--mill-danger-dim':     ['oklch(0.65 0.24 15 / 0.13)',         'Danger tint'],
+  '--mill-warning':        ['oklch(0.78 0.18 65)',                'Caution states'],
+  '--mill-warning-dim':    ['oklch(0.78 0.18 65 / 0.13)',         'Caution tint'],
+  '--mill-success':        ['oklch(0.7 0.2 155)',                 'Success / positive'],
+  '--mill-success-dim':    ['oklch(0.7 0.2 155 / 0.13)',          'Success tint'],
+  '--mill-radius':         ['14px',                               'Base border radius'],
+  '--mill-border-width':   ['1px',                                'Border width on modal + cards'],
+  '--mill-border-style':   ['solid',                              "CSS border-style ('solid', 'outset', etc.)"],
+  '--mill-shadow':         ['0 0 0 1px ..., 0 24px 64px ...',     'Full box-shadow declaration on modal'],
+  '--mill-font':           ["'Space Grotesk', system-ui, sans-serif", 'UI font stack'],
+  '--mill-font-mono':      ["'JetBrains Mono', monospace",        'Monospace font stack'],
+};
+
+const tbody = document.getElementById('tokenTableBody');
+for (const [k, v] of Object.entries(TOKEN_DOCS)) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${k}</td><td>${v[0]}</td><td>${v[1]}</td>`;
+  tbody.appendChild(tr);
+}
+</script>
+</body>
+</html>

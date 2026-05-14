@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mill — Theme Stress Test</title>
+<!-- Pixel + retro fonts pulled from Google so themes that reference them actually render -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Comic+Neue:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  body { font-family: system-ui, sans-serif; background: #888; padding: 30px; max-width: 760px; margin: 0 auto; }
+  h1 { margin-top: 0; }
+  .row { margin: 14px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+  button { padding: 10px 16px; border-radius: 6px; border: 1px solid #444; background: #eee; cursor: pointer; font-size: 13px; }
+  button:hover { background: #ddd; }
+  pre { background: #1a1a1a; color: #eee; padding: 12px; border-radius: 6px; font-size: 11px; max-height: 240px; overflow: auto; }
+  .swatch { display:inline-block; width: 12px; height: 12px; border-radius:2px; vertical-align: middle; margin-right: 4px; border:1px solid rgba(0,0,0,0.2); }
+</style>
+</head>
+<body>
+  <h1>Mill — Theme Stress Test</h1>
+  <p>Each button opens the signer with an extreme theme override. If anything still looks wrong (dark patches on light themes, accent color leaking through, hardcoded purple shadow visible) — that's a hardcoded value we missed.</p>
+
+  <div class="row">
+    <button onclick="open_('dark')">Built-in: dark</button>
+    <button onclick="open_('light')">Built-in: light</button>
+    <button onclick="open_('minimal')">Built-in: minimal</button>
+    <button onclick="open_('grain')">Built-in: grain</button>
+  </div>
+
+  <h3>Extreme custom themes</h3>
+  <div class="row">
+    <button onclick="open_(themes.pubkeyQuest)">Pubkey Quest (pixel-art dark)</button>
+    <button onclick="open_(themes.terminal)">Terminal green</button>
+    <button onclick="open_(themes.solarized)">Solarized Light</button>
+    <button onclick="open_(themes.candy)">Candy</button>
+    <button onclick="open_(themes.brutalist)">Brutalist</button>
+  </div>
+
+  <h3>Result</h3>
+  <pre id="out">click a button above</pre>
+
+  <script src="../dist/mill.umd.js"></script>
+  <script>
+    const out = document.getElementById('out');
+
+    const themes = {
+      // Pubkey Quest's actual aesthetic: dark pixel-art with Dogica font.
+      // bgPrimary rgb(30,30,30), bgSecondary rgb(45,45,45), bgTertiary rgb(60,60,60),
+      // text rgb(212,212,212), highlight blue rgb(86,156,214). Sharp corners.
+      pubkeyQuest: {
+        '--mill-bg':             'rgb(30,30,30)',
+        '--mill-surface':        'rgb(45,45,45)',
+        '--mill-card':           'rgb(45,45,45)',
+        '--mill-card-hover':     'rgb(60,60,60)',
+        '--mill-inset':          'rgb(30,30,30)',
+        '--mill-inset-strong':   'rgb(20,20,20)',
+        '--mill-overlay':        'rgba(0,0,0,0.7)',
+        '--mill-border':         'rgb(60,60,60)',
+        '--mill-border-light':   'rgb(86,156,214)',
+        '--mill-accent':         'rgb(86,156,214)',
+        '--mill-accent-hover':   'rgb(120,180,230)',
+        '--mill-accent-dim':     'rgba(86,156,214,0.18)',
+        '--mill-teal':           'rgb(78,201,176)',
+        '--mill-teal-dim':       'rgba(78,201,176,0.18)',
+        '--mill-text':           'rgb(212,212,212)',
+        '--mill-text-secondary': 'rgb(180,180,180)',
+        '--mill-muted':          'rgb(110,110,110)',
+        '--mill-danger':         'rgb(244,71,71)',
+        '--mill-danger-dim':     'rgba(244,71,71,0.18)',
+        '--mill-warning':        'rgb(220,170,50)',
+        '--mill-warning-dim':    'rgba(220,170,50,0.18)',
+        '--mill-success':        'rgb(106,206,106)',
+        '--mill-success-dim':    'rgba(106,206,106,0.18)',
+        '--mill-radius':         '0px',
+        '--mill-border-width':   '2px',
+        '--mill-border-style':   'solid',
+        // Faux-3D drop with darker shadow + slight lifted highlight
+        '--mill-shadow':         '4px 4px 0 0 rgb(20,20,20), 0 0 0 2px rgb(86,156,214)',
+        // For real pubkey-quest fidelity, host should load Dogica via @font-face.
+        // Falls back to Press Start 2P (Google Fonts) for the pixel aesthetic.
+        '--mill-font':           '"Dogica", "Press Start 2P", "Courier New", monospace',
+        '--mill-font-mono':      '"Dogica Pixel", "Press Start 2P", "Courier New", monospace',
+      },
+      terminal: {
+        '--mill-bg':             '#000',
+        '--mill-surface':        '#000',
+        '--mill-card':           '#001a00',
+        '--mill-card-hover':     '#003300',
+        '--mill-inset':          '#001100',
+        '--mill-inset-strong':   '#000800',
+        '--mill-overlay':        'rgba(0,40,0,0.8)',
+        '--mill-border':         '#00aa00',
+        '--mill-border-light':   '#00ff00',
+        '--mill-accent':         '#00ff00',
+        '--mill-accent-hover':   '#66ff66',
+        '--mill-accent-dim':     'rgba(0,255,0,0.18)',
+        '--mill-teal':           '#00cccc',
+        '--mill-teal-dim':       'rgba(0,204,204,0.18)',
+        '--mill-text':           '#00ff00',
+        '--mill-text-secondary': '#88ff88',
+        '--mill-muted':          '#448844',
+        '--mill-danger':         '#ff3333',
+        '--mill-danger-dim':     'rgba(255,51,51,0.2)',
+        '--mill-warning':        '#ffcc00',
+        '--mill-warning-dim':    'rgba(255,204,0,0.2)',
+        '--mill-success':        '#00ff00',
+        '--mill-success-dim':    'rgba(0,255,0,0.2)',
+        '--mill-radius':         '2px',
+        '--mill-border-width':   '1px',
+        '--mill-border-style':   'solid',
+        '--mill-shadow':         '0 0 30px rgba(0,255,0,0.4), 0 0 80px rgba(0,255,0,0.2)',
+        '--mill-font':           '"VT323", "Fira Code", "Cascadia Mono", monospace',
+        '--mill-font-mono':      '"VT323", "Fira Code", monospace',
+      },
+      solarized: {
+        '--mill-bg':             '#fdf6e3',
+        '--mill-surface':        '#eee8d5',
+        '--mill-card':           '#fdf6e3',
+        '--mill-card-hover':     '#f5efd9',
+        '--mill-inset':          'rgba(101,123,131,0.10)',
+        '--mill-inset-strong':   'rgba(101,123,131,0.18)',
+        '--mill-overlay':        'rgba(7,54,66,0.30)',
+        '--mill-border':         '#e0dabb',
+        '--mill-border-light':   '#93a1a1',
+        '--mill-accent':         '#268bd2',
+        '--mill-accent-hover':   '#2aa198',
+        '--mill-accent-dim':     'rgba(38,139,210,0.13)',
+        '--mill-teal':           '#2aa198',
+        '--mill-teal-dim':       'rgba(42,161,152,0.13)',
+        '--mill-text':           '#073642',
+        '--mill-text-secondary': '#586e75',
+        '--mill-muted':          '#93a1a1',
+        '--mill-danger':         '#dc322f',
+        '--mill-danger-dim':     'rgba(220,50,47,0.13)',
+        '--mill-warning':        '#b58900',
+        '--mill-warning-dim':    'rgba(181,137,0,0.13)',
+        '--mill-success':        '#859900',
+        '--mill-success-dim':    'rgba(133,153,0,0.13)',
+        '--mill-radius':         '4px',
+        '--mill-border-width':   '1px',
+        '--mill-border-style':   'solid',
+        '--mill-shadow':         '0 8px 24px rgba(7,54,66,0.18)',
+        '--mill-font':           'Iosevka, "DejaVu Sans", system-ui, sans-serif',
+        '--mill-font-mono':      'Iosevka, "DejaVu Sans Mono", monospace',
+      },
+      candy: {
+        '--mill-bg':             '#fff0fa',
+        '--mill-surface':        '#fff7fc',
+        '--mill-card':           '#ffe4f3',
+        '--mill-card-hover':     '#ffcfe7',
+        '--mill-inset':          'rgba(200,80,180,0.07)',
+        '--mill-inset-strong':   'rgba(200,80,180,0.13)',
+        '--mill-overlay':        'rgba(255,182,222,0.6)',
+        '--mill-border':         '#ffc6e1',
+        '--mill-border-light':   '#ff7fbb',
+        '--mill-accent':         '#ff3399',
+        '--mill-accent-hover':   '#ff66b8',
+        '--mill-accent-dim':     'rgba(255,51,153,0.13)',
+        '--mill-teal':           '#a060ff',
+        '--mill-teal-dim':       'rgba(160,96,255,0.13)',
+        '--mill-text':           '#3a0030',
+        '--mill-text-secondary': '#8a3070',
+        '--mill-muted':          '#c898b8',
+        '--mill-danger':         '#cc0044',
+        '--mill-danger-dim':     'rgba(204,0,68,0.13)',
+        '--mill-warning':        '#d4880a',
+        '--mill-warning-dim':    'rgba(212,136,10,0.13)',
+        '--mill-success':        '#16a34a',
+        '--mill-success-dim':    'rgba(22,163,74,0.13)',
+        '--mill-radius':         '24px',
+        '--mill-border-width':   '2px',
+        '--mill-border-style':   'solid',
+        '--mill-shadow':         '0 12px 40px rgba(255,51,153,0.3), 0 0 80px rgba(160,96,255,0.15)',
+        '--mill-font':           '"Comic Sans MS", "Comic Sans", cursive, sans-serif',
+        '--mill-font-mono':      '"Comic Mono", "Comic Sans MS", monospace',
+      },
+      brutalist: {
+        '--mill-bg':             '#ffff00',
+        '--mill-surface':        '#ffffff',
+        '--mill-card':           '#ffffff',
+        '--mill-card-hover':     '#f0f0f0',
+        '--mill-inset':          '#000',
+        '--mill-inset-strong':   '#000',
+        '--mill-overlay':        'rgba(0,0,0,0.6)',
+        '--mill-border':         '#000000',
+        '--mill-border-light':   '#000000',
+        '--mill-accent':         '#ff0000',
+        '--mill-accent-hover':   '#cc0000',
+        '--mill-accent-dim':     '#ffe0e0',
+        '--mill-teal':           '#0000ff',
+        '--mill-teal-dim':       '#e0e0ff',
+        '--mill-text':           '#000000',
+        '--mill-text-secondary': '#000000',
+        '--mill-muted':          '#444444',
+        '--mill-danger':         '#ff0000',
+        '--mill-danger-dim':     '#ffe0e0',
+        '--mill-warning':        '#ff8800',
+        '--mill-warning-dim':    '#ffe8d0',
+        '--mill-success':        '#008800',
+        '--mill-success-dim':    '#e0ffe0',
+        '--mill-radius':         '0px',
+        '--mill-border-width':   '3px',
+        '--mill-border-style':   'solid',
+        '--mill-shadow':         '8px 8px 0 #000',
+        '--mill-font':           '"Helvetica Neue", Helvetica, Arial, sans-serif',
+        '--mill-font-mono':      '"Andale Mono", "Courier New", monospace',
+      },
+    };
+
+    function open_(theme) {
+      MILL.open({
+        theme,
+        onConnected: r => { out.textContent = JSON.stringify({ method: r.method, pubkey: r.pubkey, npub: r.signer?.npub }, null, 2); },
+      });
+    }
+  </script>
+</body>
+</html>

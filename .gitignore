@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output (committed for CDN/jsDelivr availability — uncomment to ignore)
+# dist/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Lockfiles from other package managers
+yarn.lock
+pnpm-lock.yaml
+
+# Local dev artifacts
+.env
+.env.local
+*.local

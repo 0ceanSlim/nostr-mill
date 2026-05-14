@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mill — Local Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #ddd; padding: 40px; max-width: 720px; margin: 0 auto; }
+  h1 { color: #a78bfa; }
+  button { padding: 10px 18px; border-radius: 8px; border: none; background: #7c3aed; color: white; cursor: pointer; font-size: 14px; }
+  button:hover { background: #8b5cf6; }
+  pre { background: #1a1a1a; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 12px; overflow: auto; max-height: 300px; }
+  .row { margin: 16px 0; }
+  .ok { color: #4ade80; }
+  .err { color: #f87171; }
+</style>
+</head>
+<body>
+  <h1>⚡ Mill — Local Test</h1>
+  <p>Click <strong>Connect</strong>, pick a method, and the result should appear below.</p>
+  <p style="color:#888;font-size:12px">If you have Alby/nos2x installed, NIP-07 should work. Read-only, new keypair, and private key flows always work. NIP-46 needs a bunker URI from nsec.app or similar. NIP-55 (Amber) needs a real Android device on a non-localhost URL — skip on localhost.</p>
+
+  <div class="row">
+    <button id="connect">Connect with Mill</button>
+    <button id="sign" disabled>Sign a test note (kind 1)</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </div>
+
+  <h3>Result</h3>
+  <pre id="out">—</pre>
+
+  <h3>Signed event</h3>
+  <pre id="signed">—</pre>
+
+  <!-- Load the local UMD build -->
+  <script src="../dist/mill.umd.js"></script>
+  <script>
+    let signer = null;
+    const out    = document.getElementById('out');
+    const signed = document.getElementById('signed');
+    const signBtn = document.getElementById('sign');
+    const dcBtn   = document.getElementById('disconnect');
+
+    document.getElementById('connect').onclick = () => {
+      MILL.open({
+        theme: 'dark',
+        onConnected: (result) => {
+          signer = result.signer;
+          out.textContent = JSON.stringify({
+            method:  result.method,
+            pubkey:  result.pubkey,
+            npub:    result.signer?.npub,
+            canSign: result.signer?.canSign,
+            hasNip04: !!result.signer?.nip04,
+            hasNip44: !!result.signer?.nip44,
+          }, null, 2);
+          out.classList.add('ok');
+          signBtn.disabled = !result.signer?.canSign;
+          dcBtn.disabled = false;
+        },
+        onClose: () => console.log('modal closed'),
+      });
+    };
+
+    signBtn.onclick = async () => {
+      if (!signer) return;
+      try {
+        const evt = {
+          kind: 1,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          content: 'Hello from Mill — test event ' + new Date().toISOString(),
+          pubkey: signer.pubkey,
+        };
+        const result = await signer.signEvent(evt);
+        signed.textContent = JSON.stringify(result, null, 2);
+        signed.classList.remove('err'); signed.classList.add('ok');
+      } catch (e) {
+        signed.textContent = 'ERROR: ' + e.message;
+        signed.classList.remove('ok'); signed.classList.add('err');
+      }
+    };
+
+    dcBtn.onclick = () => {
+      try { signer?.disconnect?.(); } catch {}
+      signer = null;
+      out.textContent = '—'; out.classList.remove('ok');
+      signed.textContent = '—'; signed.classList.remove('ok','err');
+      signBtn.disabled = true; dcBtn.disabled = true;
+    };
+  </script>
+</body>
+</html>
