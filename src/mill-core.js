@@ -795,7 +795,7 @@ function renderNIP07Flow(host, onDone, onBack) {
 
 // ── Flow: NIP-46 ──────────────────────────────────────────────────────────────
 function renderNIP46Flow(host, onDone, onBack, opts = {}) {
-  let step = 0, tab = 'url', urlVal = '', errMsg = '', statusMsg = '', userPk = '', nostrconnectURI = '';
+  let step = 0, tab = 'url', urlVal = '', errMsg = '', statusMsg = '', userPk = '', nostrconnectURI = '', authUrl = '';
   let relays = (Array.isArray(opts.relays) && opts.relays.length) ? [...opts.relays] : [...DEFAULT_RELAYS];
   let showRelayEditor = false;
   let client = null;
@@ -819,12 +819,21 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
       metadata: { name: appName, url: location.origin },
       debug: true,                 // always console.log — it's a debug-friendly default for v0.1.x betas
       onLog,
+      // The signer asked the user to approve at a URL. Surface it (and open it
+      // for web bunkers); the connect/get_public_key promise keeps waiting and
+      // resolves once the user approves, advancing the flow automatically.
+      onAuthChallenge: (url) => {
+        authUrl = url;
+        statusMsg = 'Approve the connection in your signer…';
+        if (url) { try { window.open(url, '_blank', 'noopener'); } catch (_) {} }
+        render();
+      },
     });
   }
 
   async function connectViaURL(render) {
     if (!isValidBunker(urlVal.trim())) { errMsg = 'Enter a valid bunker:// or nostrconnect:// URI'; render(); return; }
-    errMsg = ''; logs = []; step = 1; statusMsg = 'Connecting to relay…'; render();
+    errMsg = ''; authUrl = ''; logs = []; step = 1; statusMsg = 'Connecting to relay…'; render();
     try {
       // Bunker URI carries its own relays; they take precedence inside the client.
       client = makeClient();
@@ -832,7 +841,14 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
       userPk = await client.connectViaBunker(urlVal.trim(), { timeoutMs: 90_000 });
       step = 2; render();
     } catch (e) {
-      errMsg = e.message || 'NIP-46 connection failed';
+      const raw = (e && e.message) || 'NIP-46 connection failed';
+      // A bunker:// secret is single-use (NIP-46): once a connection is
+      // established the signer rejects the old secret. Re-pasting a used or
+      // expired string is the usual cause of "bad secret" — guide the user to
+      // grab a fresh connection string rather than showing the raw error.
+      errMsg = /secret/i.test(raw)
+        ? 'That bunker connection string was already used or has expired. Open your signer and copy a fresh bunker:// string, then try again.'
+        : raw;
       try { client?.disconnect(); } catch {}
       client = null;
       step = 0; render();
@@ -840,7 +856,7 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
   }
 
   async function startNostrConnectListener(render) {
-    logs = []; step = 1; statusMsg = 'Generating connection…'; errMsg = ''; render();
+    logs = []; step = 1; statusMsg = 'Generating connection…'; errMsg = ''; authUrl = ''; render();
     try {
       client = makeClient();
       statusMsg = 'Scan the URI with your bunker…';
@@ -934,6 +950,21 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
       center.appendChild(spinner('var(--mill-accent)', 48));
       center.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', textAlign: 'center' } }, statusMsg));
       body.appendChild(center);
+
+      // Auth challenge: the signer wants the user to approve. We auto-opened
+      // the URL; show it as a fallback (popup blockers) and keep waiting — the
+      // flow advances on its own once approved.
+      if (authUrl) {
+        body.appendChild(badge('warning', '🔐', 'Approval required',
+          'Your signer needs you to approve this connection. A tab should have opened — if not, use the button below. This screen continues automatically once you approve.'));
+        const openBtn = h('a', {
+          href: authUrl, target: '_blank', rel: 'noopener',
+          class: 'mill-btn primary',
+          style: { display: 'inline-flex', justifyContent: 'center', textDecoration: 'none', marginTop: '4px' },
+        }, 'Open approval page');
+        body.appendChild(openBtn);
+      }
+
       if (nostrconnectURI) {
         const qrWrap = h('div', { style: { display: 'flex', justifyContent: 'center', padding: '4px 0' } });
         try { qrWrap.appendChild(qr(nostrconnectURI, { size: 220 })); } catch (e) { /* QR fail — keep URI fallback */ }

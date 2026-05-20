@@ -47,10 +47,16 @@ export function parseBunkerURI(uri) {
   };
 }
 
-export function buildNostrConnectURI({ clientPubkey, relays, secret, metadata }) {
+export function buildNostrConnectURI({ clientPubkey, relays, secret, metadata = {}, perms }) {
+  // Spec-compliant params (NIP-46): relay(s), secret, then optional name/url/
+  // image and perms as discrete query params. Older mill emitted a single
+  // `metadata=<json>` blob, which some signers (e.g. Amber) don't parse.
   const parts = relays.map(r => `relay=${encodeURIComponent(r)}`);
   parts.push(`secret=${secret}`);
-  if (metadata) parts.push(`metadata=${encodeURIComponent(JSON.stringify(metadata))}`);
+  if (perms) parts.push(`perms=${encodeURIComponent(perms)}`);
+  if (metadata.name) parts.push(`name=${encodeURIComponent(metadata.name)}`);
+  if (metadata.url) parts.push(`url=${encodeURIComponent(metadata.url)}`);
+  if (metadata.image) parts.push(`image=${encodeURIComponent(metadata.image)}`);
   return `nostrconnect://${clientPubkey}?${parts.join('&')}`;
 }
 
@@ -59,11 +65,12 @@ function randomHex(bytes = 16) {
 }
 
 export class NIP46Client {
-  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null, clientSecretKey = null } = {}) {
+  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null, onAuthChallenge = null, clientSecretKey = null } = {}) {
     this.relays = relays;
     this.metadata = metadata;
     this.debug = debug;
     this.onLog = onLog;                   // optional callback for surfacing logs in UI
+    this.onAuthChallenge = onAuthChallenge; // optional: fired with the auth_url the signer asks the user to approve
     // A provided key (Uint8Array) restores a prior client identity so the
     // bunker recognizes us after a reload; otherwise generate a fresh one.
     this.clientSecretKey = clientSecretKey || generateSecretKey();
@@ -120,6 +127,9 @@ export class NIP46Client {
       relays: this.relays,
       secret,
       metadata: this.metadata,
+      // Pre-request the perms we actually use so the signer can authorize them
+      // up front instead of challenging on the first sign.
+      perms: 'sign_event,nip44_encrypt,nip44_decrypt,nip04_encrypt,nip04_decrypt',
     });
     onURI?.(uri);
 
@@ -291,10 +301,27 @@ export class NIP46Client {
     // Response to one of our pending requests
     if (msg.id && this.pending.has(msg.id)) {
       const p = this.pending.get(msg.id);
+
+      // Auth challenge (NIP-46): the signer needs the user to approve. The URL
+      // lives in `error`, and the real response arrives LATER reusing the same
+      // id. Surface the URL and keep waiting — do NOT reject or drop the
+      // pending request. (Checked before the generic error branch because an
+      // auth_url response also carries a truthy `error`.)
+      if (msg.result === 'auth_url') {
+        const url = msg.error || '';
+        this._log('info', `Auth challenge — awaiting user approval: ${url}`);
+        clearTimeout(p.timer);
+        p.timer = setTimeout(() => {
+          this.pending.delete(msg.id);
+          p.reject(new Error('NIP-46 authorization timed out'));
+        }, 120_000);
+        try { this.onAuthChallenge?.(url); } catch (_) {}
+        return;
+      }
+
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
       if (msg.error) p.reject(new Error(msg.error));
-      else if (msg.result === 'auth_url') p.reject(new Error('NIP-46 auth_url required (open in browser): ' + msg.result));
       else p.resolve(msg.result);
     }
   }
