@@ -142,10 +142,19 @@ export class NIP46Client {
     });
 
     this.remotePubkey = remotePubkey;
-    const pk = await this._request('get_public_key', [], { timeoutMs: 30_000 });
-    this.userPubkey = pk;
+    // Discover the user pubkey. Most signers answer get_public_key (the user
+    // key MAY differ from the remote-signer key, so we must ask). But some —
+    // notably Amber in the nostrconnect flow — never reply: the connect
+    // message's author IS the user key. Try get_public_key, and fall back to
+    // the connect author so those signers still connect instead of hanging.
+    try {
+      this.userPubkey = await this._request('get_public_key', [], { timeoutMs: 15_000 });
+    } catch (e) {
+      this._log('info', `get_public_key unanswered (${e.message}); using connect author ${remotePubkey.slice(0, 8)}… as the user pubkey`);
+      this.userPubkey = remotePubkey;
+    }
     this.connected = true;
-    return pk;
+    return this.userPubkey;
   }
 
   /**
