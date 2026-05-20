@@ -19,6 +19,9 @@ import {
   nsecToHex, npubToHex, hexToNpub, hexToNsec,
   generateKeypair, encryptNsec, decryptNsec,
   storeEncryptedNsec, loadEncryptedNsec, clearStoredNsec,
+  storeSignPerms, loadSignPerms, clearSignPerms,
+  storeBunkerState, loadBunkerState, clearBunkerState,
+  bytesToHex,
 } from './crypto.js';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from './crypto.js';
@@ -39,6 +42,19 @@ const SIGN_CATS = [
   { id: 'zaps',     label: 'Zap Requests',            desc: 'kind 9734',         icon: '⚡', def: 'prompt'  },
   { id: 'other',    label: 'All Other Event Kinds',   desc: 'everything else',   icon: '📋', def: 'prompt'  },
 ];
+
+const defaultPerms = () => Object.fromEntries(SIGN_CATS.map(c => [c.id, c.def]));
+
+// Map common host-side method aliases (e.g. grain's SigningMethod enum) onto
+// mill's internal method ids so MILL.restore() accepts either spelling.
+const RESTORE_METHOD_ALIASES = {
+  browser_extension: 'nip07',
+  bunker:            'nip46',
+  amber:             'nip55',
+  encrypted_key:     'privatekey',
+  newkey:            'privatekey',
+  none:              'readonly',
+};
 
 // Two levels only — sessionStorage always wipes on tab close regardless.
 const PERM_OPTS = [
@@ -961,6 +977,14 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
       body.appendChild(badge('success', '✅', 'Remote signing active', 'Signing requests will be forwarded to your bunker over the relay. Your bunker must be online to approve events.'));
       footer.appendChild(btn('Back', 'ghost', () => { try{client?.disconnect();}catch{} client=null; step = 0; render(); }));
       footer.appendChild(btn('Confirm Connection', 'primary', () => {
+        // Persist the client identity + remote so MILL.restore() can re-present
+        // the same already-authorized client to the bunker after a reload.
+        storeBunkerState({
+          clientSecretKey: bytesToHex(client.clientSecretKey),
+          remotePubkey: client.remotePubkey,
+          relays: client.relays,
+          userPubkey: userPk,
+        });
         const signer = createNIP46Signer(client, userPk);
         onDone({ method: 'nip46', pubkey: userPk, bunkerUrl: urlVal, signer });
       }));
@@ -1107,6 +1131,7 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
         const pubHex   = getPublicKey(hexToBytes(hexKey));
         const encrypted = await encryptNsec(hexKey, pw);
         storeEncryptedNsec(encrypted);
+        storeSignPerms(perms);   // so MILL.restore() can rebuild with the same policy after reload
         const promptPassword = () => Promise.resolve(pw);  // session unlock
         const signer = createPrivateKeySigner({ pubkey: pubHex, perms, promptPassword });
         onDone({ method: 'privatekey', pubkey: pubHex, perms, signer });
@@ -1197,6 +1222,7 @@ function renderNewKeypairFlow(host, onDone, onBack) {
       footer.appendChild(btn('Enter Nostr ✨', 'success', async () => {
         const encrypted = await encryptNsec(keys.privHex, pw);
         storeEncryptedNsec(encrypted);
+        storeSignPerms(perms);   // so MILL.restore() can rebuild with the same policy after reload
         const promptPassword = () => Promise.resolve(pw);
         const signer = createPrivateKeySigner({ pubkey: keys.pubHex, perms, promptPassword });
         onDone({ method: 'newkey', pubkey: keys.pubHex, nsec: keys.nsec, perms, signer });
@@ -1228,6 +1254,36 @@ function renderConnectedScreen(result, onDisconnect) {
   }
   wrap.appendChild(btn('Disconnect & Switch Account', 'ghost small', onDisconnect));
   return wrap;
+}
+
+// ── Flow: Unlock (standalone password prompt for restore) ─────────────────────
+// Shown by MILL.restore() when a private-key signer needs the session password
+// after a reload — the full picker stays closed; only the password is asked.
+function renderUnlockFlow(host, onSubmit, onCancel, opts = {}) {
+  let pw = '', errMsg = '';
+  const container = h('div', {});
+  function render() {
+    container.innerHTML = '';
+    const { wrap, body, footer } = flowWrap({
+      step: 0, total: 1,
+      title: opts.title || 'Unlock Signing',
+      subtitle: opts.subtitle || 'Enter your session password to unlock signing.',
+    });
+    body.appendChild(badge('info', '🔒', 'Session locked', 'Your encrypted key is still stored for this tab. Enter the password you set at login to decrypt it for signing.'));
+    const submit = () => {
+      if (!pw) { errMsg = 'Password required'; render(); return; }
+      onSubmit(pw);
+    };
+    const { wrap: pwWrap, input } = field('Session Password', 'Your login password', pw, v => { pw = v; errMsg = ''; }, { type: 'password', error: errMsg });
+    if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    body.appendChild(pwWrap);
+    if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+    footer.appendChild(btn('Cancel', 'ghost', () => onCancel?.()));
+    footer.appendChild(btn('Unlock', 'primary', submit));
+    container.appendChild(wrap);
+  }
+  render();
+  return container;
 }
 
 // ── NostrSignerElement — the Web Component ────────────────────────────────────
@@ -1290,10 +1346,28 @@ class NostrSignerElement extends HTMLElement {
     this._state.open      = true;
     this._state.method    = null;
     this._state.connected = null;
+    this._state.unlock    = null;
     this._render();
   }
 
+  /**
+   * Open a minimal password-only prompt (no method picker) and resolve with the
+   * entered password, or null if the user cancels. Used by MILL.restore() to
+   * unlock a private-key signer after a reload.
+   */
+  promptPassword({ title, subtitle } = {}) {
+    return new Promise(resolve => {
+      this._state.unlock = { resolve, title, subtitle };
+      this._state.open = true;
+      this._state.method = null;
+      this._state.connected = null;
+      this._render();
+    });
+  }
+
   close() {
+    // Resolve a pending unlock prompt as cancelled so callers don't hang.
+    if (this._state.unlock) { const u = this._state.unlock; this._state.unlock = null; u.resolve(null); }
     this._state.open = false;
     this._render();
     this._callbacks.onClose?.();
@@ -1333,9 +1407,25 @@ class NostrSignerElement extends HTMLElement {
       this._render();
     };
 
-    if (this._state.connected) {
+    if (this._state.unlock) {
+      const finish = (pw) => {
+        const u = this._state.unlock;
+        this._state.unlock = null;
+        this._state.open = false;
+        this._render();
+        u?.resolve(pw);
+      };
+      body.appendChild(renderUnlockFlow(this,
+        (pw) => finish(pw),
+        () => finish(null),
+        { title: this._state.unlock.title, subtitle: this._state.unlock.subtitle },
+      ));
+    } else if (this._state.connected) {
       body.appendChild(renderConnectedScreen(this._state.connected, () => {
         try { this._state.connected?.signer?.disconnect?.(); } catch {}
+        // Switching accounts: drop persisted restore state so a later
+        // MILL.restore() can't rebuild the account we just left.
+        clearStoredNsec(); clearSignPerms(); clearBunkerState();
         this._state.connected = null; this._state.method = null;
         this._dispatch('mill:disconnected', {});
         this._render();
@@ -1393,6 +1483,79 @@ const MILL = {
     const el = _getOrCreateElement();
     el.open(opts);
     return el;
+  },
+
+  /**
+   * Rebuild a signer after a page reload WITHOUT opening the picker, using the
+   * state mill persisted at login (sessionStorage). The host is responsible for
+   * remembering which method + pubkey the session used (e.g. from onConnected)
+   * and passing them here.
+   *
+   * Accepts mill method ids (nip07, nip46, nip55, privatekey, newkey, readonly)
+   * or the common grain-style aliases (browser_extension, bunker, amber,
+   * encrypted_key, none).
+   *
+   * Returns the same signer shape onConnected gives, or null if restore isn't
+   * possible (no persisted state, extension missing, user cancelled the
+   * password prompt). On null, the host should fall back to MILL.open().
+   *
+   * @param {{ method: string, pubkey: string }} opts
+   * @returns {Promise<object|null>}
+   */
+  async restore({ method, pubkey } = {}) {
+    const m = RESTORE_METHOD_ALIASES[method] || method;
+    switch (m) {
+      case 'nip07':
+        if (!window.nostr || typeof window.nostr.signEvent !== 'function') return null;
+        try {
+          const ext = await window.nostr.getPublicKey();
+          if (pubkey && ext && ext.toLowerCase() !== pubkey.toLowerCase()) return null;
+          return createNIP07Signer(pubkey || ext);
+        } catch { return null; }
+
+      case 'readonly':
+        return pubkey ? createReadOnlySigner(pubkey) : null;
+
+      case 'privatekey': {
+        if (!loadEncryptedNsec() || !pubkey) return null;
+        const el = _getOrCreateElement();
+        return createPrivateKeySigner({
+          pubkey,
+          perms: loadSignPerms() || defaultPerms(),
+          promptPassword: () => el.promptPassword({ subtitle: 'Enter your session password to unlock signing.' }),
+        });
+      }
+
+      case 'nip46': {
+        const st = loadBunkerState();
+        if (!st || !st.clientSecretKey || !st.remotePubkey) return null;
+        try {
+          const client = new NIP46Client({
+            relays: st.relays,
+            clientSecretKey: hexToBytes(st.clientSecretKey),
+          });
+          await client.restore({ remotePubkey: st.remotePubkey, relays: st.relays, userPubkey: st.userPubkey });
+          return createNIP46Signer(client, st.userPubkey || pubkey);
+        } catch { return null; }
+      }
+
+      case 'nip55': {
+        if (!pubkey) return null;
+        const callbackUrl = _imperativeEl?.getAttribute?.('amber-callback') || window.location.href.split('?')[0];
+        const appName = _imperativeEl?.getAttribute?.('app-name') || document.title || 'Nostr App';
+        return createNIP55Signer({ pubkey, callbackUrl, appName });
+      }
+
+      default:
+        return null;
+    }
+  },
+
+  /** Wipe all persisted restore state (call on logout). */
+  clearRestoreState() {
+    clearStoredNsec();
+    clearSignPerms();
+    clearBunkerState();
   },
 
   /** Apply a theme globally to the auto-created element. */

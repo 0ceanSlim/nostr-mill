@@ -104,3 +104,23 @@ const STORAGE_KEY = 'mill:nsec:enc';
 export function storeEncryptedNsec(encrypted) { sessionStorage.setItem(STORAGE_KEY, encrypted); }
 export function loadEncryptedNsec()           { return sessionStorage.getItem(STORAGE_KEY); }
 export function clearStoredNsec()             { sessionStorage.removeItem(STORAGE_KEY); }
+
+// ── Restore state (sessionStorage; wiped on tab close, same as the nsec blob) ──
+//
+// Persisted at login so MILL.restore() can rebuild a signer after a page reload
+// without re-opening the picker. Nothing here is the user's private key:
+//   - perms: the private-key signing-permission map (user's choices)
+//   - bunker: the NIP-46 client identity + remote pubkey/relays. The client
+//     secret is mill's own connection key, NOT the user's nsec, so persisting
+//     it only lets us re-present the same already-authorized client to the
+//     bunker. The user's key never leaves their bunker.
+
+const PERMS_KEY = 'mill:perms';
+export function storeSignPerms(perms) { sessionStorage.setItem(PERMS_KEY, JSON.stringify(perms)); }
+export function loadSignPerms()       { const s = sessionStorage.getItem(PERMS_KEY); try { return s ? JSON.parse(s) : null; } catch { return null; } }
+export function clearSignPerms()      { sessionStorage.removeItem(PERMS_KEY); }
+
+const BUNKER_KEY = 'mill:nip46:state';
+export function storeBunkerState(state) { sessionStorage.setItem(BUNKER_KEY, JSON.stringify(state)); }
+export function loadBunkerState()       { const s = sessionStorage.getItem(BUNKER_KEY); try { return s ? JSON.parse(s) : null; } catch { return null; } }
+export function clearBunkerState()      { sessionStorage.removeItem(BUNKER_KEY); }

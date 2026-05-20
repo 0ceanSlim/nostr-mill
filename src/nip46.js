@@ -59,12 +59,14 @@ function randomHex(bytes = 16) {
 }
 
 export class NIP46Client {
-  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null } = {}) {
+  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null, clientSecretKey = null } = {}) {
     this.relays = relays;
     this.metadata = metadata;
     this.debug = debug;
     this.onLog = onLog;                   // optional callback for surfacing logs in UI
-    this.clientSecretKey = generateSecretKey();
+    // A provided key (Uint8Array) restores a prior client identity so the
+    // bunker recognizes us after a reload; otherwise generate a fresh one.
+    this.clientSecretKey = clientSecretKey || generateSecretKey();
     this.clientPubkey = getPublicKey(this.clientSecretKey);
     this.remotePubkey = null;
     this.userPubkey = null;
@@ -134,6 +136,28 @@ export class NIP46Client {
     this.userPubkey = pk;
     this.connected = true;
     return pk;
+  }
+
+  /**
+   * Restore a previously-established session after a page reload. The bunker
+   * already authorized our client pubkey during the original pairing, so we
+   * only need to re-open the relay subscription — no new connect handshake.
+   * Construct the client with the persisted `clientSecretKey` first, then call
+   * this with the saved remote pubkey / relays / user pubkey.
+   *
+   * If the bunker has since forgotten the client, the first signEvent will
+   * time out and the caller should fall back to a fresh pairing.
+   */
+  async restore({ remotePubkey, relays, userPubkey } = {}) {
+    if (!remotePubkey) throw new Error('restore requires remotePubkey');
+    this.remotePubkey = remotePubkey;
+    if (Array.isArray(relays) && relays.length) this.relays = relays;
+    this.userPubkey = userPubkey || null;
+    this._closed = false;
+    this._openPool();
+    this.connected = true;
+    this._log('info', `Restored NIP-46 session for ${this.clientPubkey.slice(0, 8)}… → ${remotePubkey.slice(0, 8)}…`);
+    return this.userPubkey;
   }
 
   async getPublicKey() {
