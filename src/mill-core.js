@@ -810,9 +810,13 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
   };
 
   function makeClient() {
+    // The bunker shows this name when authorizing the connection. Hosts set
+    // it via MILL.open({ appName }) (or the app-name attribute); fall back to
+    // the page title, then a generic label — never the literal "MILL".
+    const appName = host.getAttribute?.('app-name') || document.title || 'Nostr App';
     return new NIP46Client({
       relays,
-      metadata: { name: 'MILL', url: location.origin },
+      metadata: { name: appName, url: location.origin },
       debug: true,                 // always console.log — it's a debug-friendly default for v0.1.x betas
       onLog,
     });
@@ -1477,10 +1481,18 @@ function _getOrCreateElement() {
 const MILL = {
   /**
    * Open the signer modal.
-   * @param {{ theme?: string|object, onConnected?: function, onClose?: function }} opts
+   * @param {{ theme?: string|object, onConnected?: function, onClose?: function,
+   *           appName?: string, amberCallback?: string }} opts
+   *   appName       — name shown to the user's remote signer / bunker (NIP-46)
+   *                   and Amber (NIP-55) instead of the default page title.
+   *   amberCallback — server callback URL for the NIP-55 Amber round-trip.
    */
   open(opts = {}) {
     const el = _getOrCreateElement();
+    // Surface host config as element attributes so the per-method flows
+    // (which read attributes off the host element) pick them up.
+    if (opts.appName) el.setAttribute('app-name', opts.appName);
+    if (opts.amberCallback) el.setAttribute('amber-callback', opts.amberCallback);
     el.open(opts);
     return el;
   },
