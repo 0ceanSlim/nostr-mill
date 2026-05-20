@@ -142,16 +142,26 @@ export class NIP46Client {
     });
 
     this.remotePubkey = remotePubkey;
-    // Discover the user pubkey. Most signers answer get_public_key (the user
-    // key MAY differ from the remote-signer key, so we must ask). But some —
-    // notably Amber in the nostrconnect flow — never reply: the connect
-    // message's author IS the user key. Try get_public_key, and fall back to
-    // the connect author so those signers still connect instead of hanging.
+    // Discover the user pubkey. The connect author (remotePubkey) is only the
+    // per-connection transport/remote-signer key — NOT necessarily the user's
+    // identity. Ask get_public_key for the real one. Some signers (Amber's
+    // nostrconnect flow) never answer it, so fall back to deriving the pubkey
+    // from a signed probe event: signing works there, and the signed event's
+    // author IS the user's real key. This keeps the session identity equal to
+    // whatever actually signs (so relay owner / NIP-98 checks line up).
     try {
       this.userPubkey = await this._request('get_public_key', [], { timeoutMs: 15_000 });
     } catch (e) {
-      this._log('info', `get_public_key unanswered (${e.message}); using connect author ${remotePubkey.slice(0, 8)}… as the user pubkey`);
-      this.userPubkey = remotePubkey;
+      this._log('info', `get_public_key unanswered (${e.message}); deriving user pubkey from a signed probe`);
+      const probe = await this.signEvent({
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['challenge', 'mill-connect']],
+        content: '',
+      });
+      if (!probe || !probe.pubkey) throw new Error('Signer did not return a usable public key');
+      this.userPubkey = probe.pubkey;
+      this._log('info', `Derived user pubkey ${this.userPubkey.slice(0, 8)}… from signed probe`);
     }
     this.connected = true;
     return this.userPubkey;
