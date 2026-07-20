@@ -95,7 +95,9 @@ export function createNIP55Signer({ pubkey, callbackUrl, appName }) {
 
 // ── Private key (encrypted nsec, prompts for password per perms) ──────────────
 //
-// `perms` is { categoryId: 'ask'|'session'|'always' }.
+// `perms` is { categoryId: 'session'|'prompt' } — the coarse pre-approval
+// chosen at setup. 'session' auto-approves the category; 'prompt' shows the
+// consent card, where the user can then remember an answer per kind.
 // `promptPassword` is a function the host provides to ask the user for the
 // session password (returns Promise<string>). MILL's modal supplies one.
 // Two independent gates, deliberately not fused:

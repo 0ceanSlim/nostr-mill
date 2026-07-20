@@ -26,6 +26,8 @@ Drop it into any web app with a `<script>` tag. Works with every Nostr signing m
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
 - `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`
+- `MILL.restore({ method, pubkey })`
+- `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
 - `deliverAmberCallback({ autoClose })`
 - `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`
@@ -189,10 +191,65 @@ MILL.open({ theme: brandTheme({ accent: '#7c3aed', radius: '6px' }) });
 type MillResult = {
   method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey';
   pubkey:    string;          // hex-encoded public key, always present
-  perms?:    SigningPerms;    // per-kind signing preferences (privatekey / newkey only)
+  perms?:    SigningPerms;    // per-category pre-approval (privatekey / newkey only)
   bunkerUrl?: string;         // NIP-46 only
   nsec?:     string;          // newkey flow only — the generated nsec (handle carefully)
 };
+
+// { notes | profile | contacts | dms | zaps | other → 'session' | 'prompt' }
+//   'session' — auto-approve this category until the tab closes
+//   'prompt'  — show the consent card and let the user decide
+type SigningPerms = Record<string, 'session' | 'prompt'>;
+```
+
+---
+
+## Signing consent (private key only)
+
+When mill holds the key itself, it acts as the signer — so it owns the approval
+UX. NIP-07, NIP-46 and NIP-55 approve requests inside their own extension or
+app, and mill stays out of the way.
+
+There are **two independent gates**, deliberately not fused:
+
+| Gate | Question | Cost |
+|---|---|---|
+| **Unlock** | Do we have your key? | Password, once per session |
+| **Consent** | Do you approve *this* event? | Approve/reject, per kind |
+
+Fusing them forces a choice between a password per signature (which users turn
+off immediately) and no review at all. Splitting them means a request can be
+shown to you without costing a password. This mirrors Amber, whose biometric
+gate wraps the app and is skipped entirely once a permission is remembered.
+
+The key is encrypted at rest, so the **first** signature after a page load
+always costs a password — that's the cipher, not policy.
+
+### Consent card
+
+Shown when neither a per-kind grant nor the category pre-approval has already
+authorised a request. It names what is being signed (`wants you to sign an
+Article`), identifies the account, and hides the payload behind **Show
+details** — kind, date, decoded content and tags. Unknown kinds fall back to
+the event's `alt` tag, then to `Event kind N`.
+
+The user picks how long to remember the answer — `Just this time` (default,
+stores nothing), `5 minutes`, `1 hour`, `This session`, `Always` — and the
+choice applies to **Reject** as well as **Approve**, so "block this kind for
+this session" is one interaction.
+
+Grants are keyed per kind, so approving a `Note` never authorises an `Article`.
+`Always` grants persist in `localStorage`; everything else lives in
+`sessionStorage` and dies with the tab, alongside the key it authorises.
+
+### Managing permissions
+
+The consent card links to a permissions manager, so **no host wiring is
+required** — mill is only on screen when it's asking for something, which makes
+that the natural entry point. If you'd rather offer a direct route:
+
+```js
+MILL.openSettings();   // per-kind grants: Allow / Block / Ask, plus Forget all
 ```
 
 ---
@@ -200,6 +257,7 @@ type MillResult = {
 ## Security notes
 
 - **Private key flows**: nsec is encrypted with AES-256-GCM (PBKDF2, 100k iterations) and stored only in `sessionStorage` — wiped on tab close.  
+- **Signing consent**: the password is a session unlock, not a per-event gate. Once unlocked, the decrypted key is held in memory for the tab — so a remembered grant signs without further prompting. Consent limits *what* gets signed; it is not a defence against script execution on your own origin.  
 - **NIP-07**: MILL never sees the private key. Only the public key and completed signed events pass through.  
 - **NIP-46**: Only signed event payloads travel over the relay — never the key.  
 - **NIP-55**: On-device intent — no network between apps.  

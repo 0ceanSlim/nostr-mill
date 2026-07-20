@@ -102,6 +102,9 @@ export function kindLabel(event) {
   const hit = KINDS[kind];
   if (hit) return hit[0];
 
+  const group = kindGroupLabel(kind);
+  if (group) return group;
+
   if (event && Array.isArray(event.tags)) {
     const alt = event.tags.find(t => t?.[0] === 'alt')?.[1];
     if (alt && alt.trim()) return alt.trim();
@@ -118,10 +121,15 @@ export function kindArticle(label) {
   return /^[aeiou]/i.test(String(label || '')) ? 'an' : 'a';
 }
 
-/** Ranges get a generic label rather than 150 individual entries. */
+/**
+ * Ranges get one generic label rather than 2000 individual entries.
+ * NIP-90 data-vending-machine kinds are allocated in blocks, so the specific
+ * number carries less meaning than the block does.
+ */
 export function kindGroupLabel(kind) {
   if (kind >= 5000 && kind <= 5999) return 'Job Request';
   if (kind >= 6000 && kind <= 6999) return 'Job Result';
+  if (kind >= 7000 && kind <= 7999) return 'Job Feedback';
   return null;
 }
 

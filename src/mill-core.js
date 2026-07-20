@@ -60,12 +60,15 @@ const RESTORE_METHOD_ALIASES = {
   none:              'readonly',
 };
 
-// Two levels only — sessionStorage always wipes on tab close regardless.
+// These choose whether a category is PRE-APPROVED, not when a password is
+// typed. The password is a separate, session-level unlock — see
+// createPrivateKeySigner's two-gate split. Wire values stay 'session'/'prompt'
+// because they're part of the public `perms` shape and persisted state.
 const PERM_OPTS = [
-  { id: 'session', label: 'Unlock once', sublabel: 'per session',  color: 'var(--mill-success)', icon: '🔓',
-    desc: 'Enter password once when this tab first needs to sign this kind. Silent for the rest of the session — key wipes on tab close.' },
-  { id: 'prompt',  label: 'Prompt',      sublabel: 'every time',   color: 'var(--mill-warning)', icon: '🔒',
-    desc: 'Password required every single time an event of this kind is signed.' },
+  { id: 'session', label: 'Auto-approve', sublabel: 'this session', color: 'var(--mill-success)', icon: '✅',
+    desc: 'Signs without asking, until you close this tab.' },
+  { id: 'prompt',  label: 'Review',       sublabel: 'each time',    color: 'var(--mill-warning)', icon: '👀',
+    desc: 'Shows you what is being signed, and you approve or reject it.' },
 ];
 
 const METHOD_META = {
@@ -682,14 +685,14 @@ function flowWrap({ step, total, title, subtitle, onBack }) {
 function permsSummary(perms) {
   const ids      = SIGN_CATS.map(c => c.id);
   const isCustom = ids.some(id => perms[id] !== SIGN_CATS.find(c => c.id === id).def);
-  if (!isCustom) return 'Post and react without re-entering your password. Profile, follows, messages, and zaps ask each time.';
+  if (!isCustom) return 'Posts and reactions are signed automatically. Profile, follows, messages, and zaps are shown to you first.';
 
   const session = SIGN_CATS.filter(c => perms[c.id] === 'session');
-  if (!session.length)             return 'Your password is required every time anything is signed.';
-  if (session.length === ids.length) return 'Password entered once per session — nothing prompts again until you close this tab.';
+  if (!session.length)             return 'Every request is shown to you before anything is signed.';
+  if (session.length === ids.length) return 'Everything is signed automatically until you close this tab.';
   const names = session.map(c => c.label.toLowerCase());
   const list  = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-  return `Unlocked once per session for ${list}. Everything else asks each time.`;
+  return `Automatic for ${list}. Everything else is shown to you first.`;
 }
 
 function signingBehaviorEditor(perms) {
@@ -773,7 +776,7 @@ function signingBehaviorEditor(perms) {
   });
 
   details.appendChild(badge('muted', 'ℹ️', null,
-    'These settings only apply to private-key signing. NIP-07, NIP-46, and NIP-55 manage their own approval prompts inside the extension or app.'
+    'Anything set to Review shows you the event before it is signed, and you can remember that answer per kind at that point. Applies to private-key signing only — NIP-07, NIP-46, and NIP-55 approve requests in their own extension or app.'
   ));
   wrap.appendChild(details);
   applyOpen();
@@ -1345,7 +1348,7 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
       }));
       container.appendChild(wrap);
     } else if (step === 1) {
-      const { wrap, body, footer } = flowWrap({ step: 1, total: 4, title: 'Set Session Password', subtitle: 'This password encrypts your nsec in session storage. Required for decryption when signing.', onBack: () => { step = 0; render(); } });
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 4, title: 'Set Session Password', subtitle: 'This password encrypts your key while it sits in this browser. You enter it once per session to unlock signing — not for each event.', onBack: () => { step = 0; render(); } });
       body.appendChild(badge('info', '🔒', 'How encryption works', 'Your nsec is encrypted with AES-256-GCM using a PBKDF2-derived key (100k iterations, SHA-256). Stored in sessionStorage — wiped on tab close.'));
       const isOk = () => pw.length >= 4 && pw === pw2;
       const setBtn = btn('Set Password', 'primary', () => { if (isOk()) { step = 2; render(); } }, !isOk());
@@ -1364,7 +1367,7 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
       footer.appendChild(setBtn);
       container.appendChild(wrap);
     } else if (step === 2) {
-      const { wrap, body, footer } = flowWrap({ step: 2, total: 4, title: 'Signing Permissions', subtitle: 'Choose whether to unlock once per session or prompt every time, per event kind. Only applies to private-key signing — NIP-07/46/55 handle this in their own apps.', onBack: () => { step = 1; render(); } });
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 4, title: 'Signing Permissions', subtitle: 'Choose what gets signed automatically and what you want to see first. You can change any of this later. Only applies to private-key signing — NIP-07/46/55 approve things in their own apps.', onBack: () => { step = 1; render(); } });
       body.appendChild(signingBehaviorEditor(perms));
       footer.appendChild(btn('Back', 'ghost', () => { step = 1; render(); }));
       footer.appendChild(btn('Continue', 'primary', () => { step = 3; render(); }));
@@ -1456,7 +1459,7 @@ function renderNewKeypairFlow(host, onDone, onBack) {
       footer.appendChild(btn('Continue', 'primary', () => { step = 3; render(); }, !checks.every(Boolean)));
       container.appendChild(wrap);
     } else if (step === 3) {
-      const { wrap, body, footer } = flowWrap({ step: 3, total: 5, title: 'Encrypt & Signing Settings', subtitle: 'Set a session password and configure signing permissions.', onBack: () => { step = 2; render(); } });
+      const { wrap, body, footer } = flowWrap({ step: 3, total: 5, title: 'Encrypt & Signing Settings', subtitle: 'Set a session password to protect your key in this browser, and choose what gets signed automatically.', onBack: () => { step = 2; render(); } });
       const isOk = () => pw.length >= 4 && pw === pw2;
       const contBtn = btn('Continue', 'primary', () => { if (isOk()) { step = 4; render(); } }, !isOk());
       const err1 = h('div', { class: 'mill-error' });
@@ -1700,7 +1703,7 @@ function renderUnlockFlow(host, onSubmit, onCancel, opts = {}) {
       title: opts.title || 'Unlock Signing',
       subtitle: opts.subtitle || 'Enter your session password to unlock signing.',
     });
-    body.appendChild(badge('info', '🔒', 'Session locked', 'Your encrypted key is still stored for this tab. Enter the password you set at login to decrypt it for signing.'));
+    body.appendChild(badge('info', '🔒', 'Session locked', 'Your key is encrypted and still stored for this tab. Enter the password you set at login to unlock it — once, for the rest of this session.'));
     const submit = () => {
       if (!pw) { errMsg = 'Password required'; render(); return; }
       onSubmit(pw);
