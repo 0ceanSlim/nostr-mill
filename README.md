@@ -221,6 +221,20 @@ MILL.open({ oauthShim: 'https://auth.yourdomain.com/mill-oauth.html' });
 // or: <nostr-signer oauth-shim="https://auth.yourdomain.com/mill-oauth.html">
 ```
 
+Once `oauthShim` is set, **Google** appears as a first-class sign-in option
+(with the real Google logo) — both as a card in the picker and under
+"I'm new here", so new *and* returning users can reach it. It also slots into an
+explicit `methods` list like any other method, in whatever order you want:
+
+```js
+MILL.open({ oauthShim: '…', methods: ['google', 'nip07', 'privatekey'] });
+```
+
+Without an `oauthShim`, `google` is hidden from the default picker (listing it
+explicitly still shows it, then a clear "not configured" screen). The Google
+mark keeps its brand colours; everything around it — card, badge, buttons —
+follows your theme.
+
 **One-time setup (free, no billing account):**
 
 1. Deploy [`shim/mill-oauth.html`](shim/mill-oauth.html) to a stable origin you

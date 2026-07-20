@@ -84,10 +84,11 @@ const METHOD_META = {
   nip46:      { label: 'Remote Signer',     icon: '📡',  color: 'var(--mill-teal)'    },
   nip55:      { label: 'Android Signer',    icon: '📱',  color: 'var(--mill-teal)'    },
   newkey:     { label: 'New Identity',      icon: '✨',  color: 'var(--mill-success)' },
-  google:     { label: 'Google',            icon: '🔵',  color: 'var(--mill-accent)'  },
+  google:     { label: 'Google',            icon: googleLogo, color: 'var(--mill-accent)' },
 };
 
 const METHODS_LIST = [
+  { id: 'google',     label: 'Google',             sub: 'Cloud login',   icon: googleLogo, secLabel: 'Easiest', secColor: 'var(--mill-success)' },
   { id: 'nip07',      label: 'Browser Extension', sub: 'NIP-07',        icon: '🧩', secLabel: 'Recommended',  secColor: 'var(--mill-success)' },
   { id: 'nip46',      label: 'Remote Signer',     sub: 'NIP-46 Bunker', icon: '📡', secLabel: 'High security', secColor: 'var(--mill-teal)'    },
   { id: 'nip55',      label: 'Android Signer',    sub: 'NIP-55 · Amber',icon: '📱', secLabel: 'Android only',  secColor: 'var(--mill-warning)'    },
@@ -572,6 +573,41 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// A method icon may be an emoji string or a function that builds a node (used
+// for real brand logos). Normalise to something h() can append.
+function iconNode(icon, size) {
+  return typeof icon === 'function' ? icon(size) : icon;
+}
+
+// Official multi-colour Google "G". Its brand colours are fixed by design and
+// intentionally NOT themed — recolouring it would be both wrong and off-brand.
+// Everything around it (tile, text, borders) still follows the palette.
+// The G on a white rounded tile — Google's prescribed presentation on coloured
+// or dark buttons, where the bare multi-colour mark would clash. Used on the
+// primary "Continue with Google" button.
+function googleLogoOnWhite(size = 18) {
+  const pad = Math.round(size * 0.28);
+  const tile = h('span', { style: {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: `${size + pad * 2}px`, height: `${size + pad * 2}px`,
+    background: '#fff', borderRadius: '5px', flexShrink: '0',
+  } });
+  tile.appendChild(googleLogo(size));
+  return tile;
+}
+
+function googleLogo(size = 22) {
+  const span = h('span', { style: { display: 'inline-flex', width: `${size}px`, height: `${size}px`, lineHeight: '0' } });
+  span.innerHTML =
+    `<svg viewBox="0 0 48 48" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg" aria-label="Google" role="img">` +
+    `<path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>` +
+    `<path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>` +
+    `<path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.28-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>` +
+    `<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>` +
+    `</svg>`;
+  return span;
+}
+
 function badge(type, icon, title, body) {
   return h('div', { class: `mill-badge ${type}` },
     icon && h('span', { class: 'mill-badge-icon' }, icon),
@@ -583,7 +619,9 @@ function badge(type, icon, title, body) {
 }
 
 function btn(label, variant, onClick, disabled = false) {
-  const b = h('button', { class: `mill-btn ${variant}`, onClick }, label);
+  // label may be a string, or an array of children (e.g. [logo, 'text']) so a
+  // button can carry a brand logo alongside its text.
+  const b = h('button', { class: `mill-btn ${variant}`, onClick }, ...[].concat(label));
   if (disabled) b.disabled = true;
   return b;
 }
@@ -817,6 +855,11 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   //   undefined / [] → show all defaults (newkey appears as a separated callout above sign-in methods)
   //   ['nip07', 'nip46']           → only these, in this order; newkey is treated as just another card
   //   [{ id: 'nip07', label: 'My Ext', icon: '⚡' }, ...]  → override built-in fields
+  // Google login only makes sense once the host has deployed an OAuth shim, so
+  // it appears in the default picker only when configured. An explicit methods:
+  // list still shows it if asked (clicking without a shim shows a clear
+  // "not configured" screen rather than failing silently).
+  const googleAvailable = !!host?.getAttribute?.('oauth-shim');
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
   const resolved = explicit
     ? methodFilter.map(entry => {
@@ -825,7 +868,11 @@ function renderMethodSelection(host, onSelect, opts = {}) {
         if (!base) return null;
         return typeof entry === 'object' ? { ...base, ...entry } : base;
       }).filter(Boolean)
-    : METHODS_LIST.filter(m => !DEFAULT_HIDDEN_METHODS.has(m.id));
+    : METHODS_LIST.filter(m => {
+        if (DEFAULT_HIDDEN_METHODS.has(m.id)) return false;
+        if (m.id === 'google') return googleAvailable;
+        return true;
+      });
 
   // Callout: when not explicit AND callout id is enabled and present, separate it out.
   // When the consumer explicitly orders methods, respect their order (no separation) unless callout was explicitly set.
@@ -838,7 +885,6 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     // (Continue with Google / Generate my own keys) instead of jumping
     // straight to key generation. With no Google shim set, behaviour is
     // unchanged — existing hosts see exactly the same screen as before.
-    const googleAvailable = !!host?.getAttribute?.('oauth-shim');
     const calloutTarget = (calloutId === 'newkey' && googleAvailable) ? '_newhere' : calloutId;
     // Per-method callout copy. Default New-Identity copy if it's newkey.
     const calloutCopy = calloutId === 'newkey'
@@ -851,7 +897,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
       onClick: () => onSelect(calloutTarget),
       style: { padding: '10px 14px', background: 'var(--mill-accent-dim)', borderColor: 'var(--mill-accent)', borderStyle: 'dashed', marginBottom: '14px' },
     });
-    callout.appendChild(h('div', { class: 'mill-method-icon', style: { width: '32px', height: '32px', fontSize: '17px' } }, calloutEntry.icon));
+    callout.appendChild(h('div', { class: 'mill-method-icon', style: { width: '32px', height: '32px', fontSize: '17px' } }, iconNode(calloutEntry.icon, 18)));
     const txt = h('div', { style: { flex: '1', minWidth: '0' } });
     txt.appendChild(h('div', { style: { fontSize: '13.5px', fontWeight: '600', color: 'var(--mill-accent)' } }, calloutCopy.headline));
     txt.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--mill-text-secondary)', marginTop: '2px', lineHeight: '1.4' } }, calloutCopy.subline));
@@ -886,7 +932,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     const iconEl = h('div', {
       class: 'mill-method-icon',
       style: isCompact ? { width: '32px', height: '32px', fontSize: '16px', flexShrink: '0' } : {},
-    }, m.icon);
+    }, iconNode(m.icon, isCompact ? 18 : 24));
     card.appendChild(iconEl);
 
     // Middle: name (+ sub label inline if comfortable, or hidden if compact)
@@ -1443,7 +1489,7 @@ function renderNewHereChooser(host, onSelect, onBack) {
       style: { padding: '13px 15px', marginBottom: '10px',
         ...(primary ? { background: 'var(--mill-accent-dim)', borderColor: 'var(--mill-accent)' } : {}) },
     });
-    card.appendChild(h('div', { class: 'mill-method-icon', style: { width: '34px', height: '34px', fontSize: '18px' } }, icon));
+    card.appendChild(h('div', { class: 'mill-method-icon', style: { width: '34px', height: '34px', fontSize: '18px' } }, iconNode(icon, 20)));
     const txt = h('div', { style: { flex: '1', minWidth: '0' } });
     txt.appendChild(h('div', { style: { fontSize: '14px', fontWeight: '600', color: primary ? 'var(--mill-accent)' : 'var(--mill-text)' } }, title));
     txt.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--mill-text-secondary)', marginTop: '2px', lineHeight: '1.45' } }, sub));
@@ -1452,7 +1498,7 @@ function renderNewHereChooser(host, onSelect, onBack) {
     return card;
   };
 
-  body.appendChild(option('🔵', 'Continue with Google',
+  body.appendChild(option(googleLogo, 'Continue with Google',
     'Easiest. Your key is created and safely stored for you — nothing to write down.',
     true, () => onSelect('google')));
   body.appendChild(option('🔑', 'Generate my own keys',
@@ -1571,7 +1617,7 @@ function renderGoogleFlow(host, onDone, onBack) {
       body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you (or your existing one is restored). It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       footer.appendChild(btn('Back', 'ghost', onBack));
-      footer.appendChild(btn('Continue with Google', 'primary', () => connect(render)));
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => connect(render)));
       container.appendChild(wrap);
 
     } else if (step === 'connecting') {
@@ -1718,7 +1764,7 @@ function renderNewKeypairFlow(host, onDone, onBack) {
 function renderConnectedScreen(result, onDisconnect, opts = {}) {
   const m = METHOD_META[result.method] || {};
   const wrap = h('div', { class: 'mill-connected' });
-  const avatar = h('div', { class: 'mill-connected-avatar' }, m.icon);
+  const avatar = h('div', { class: 'mill-connected-avatar' }, iconNode(m.icon, 40));
   avatar.style.background = `radial-gradient(circle, ${m.color}30, transparent)`;
   avatar.style.borderColor = m.color;
   wrap.appendChild(avatar);
