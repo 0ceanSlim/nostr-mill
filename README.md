@@ -208,9 +208,13 @@ type MillResult = {
 
 ## NIP-55 (Amber direct) — opt-in only
 
-NIP-55 is **hidden from the default modal** because the browser → Amber → browser round trip relies on Android's intent + custom-URI behavior, which is inconsistent across mobile browsers. Without a server-side callback handler, sign-in often appears to stall after the user approves in Amber.
+NIP-55 is **hidden from the default modal**, but not because it fails to connect — as of v1.6.0 mill returns results via the clipboard, which needs no callback route, no server, and no host-app code at all.
 
-The code path is intact — NIP-55 is fully implemented and works when wired up correctly. To enable it, opt in via `methods`:
+It stays hidden because **Amber 6.2.2+ deliberately refuses to remember approvals for browser callers.** Web pages arrive with no calling package, so they all share a single `null` identity; rather than let them share one grant, Amber forces always-ask. The practical effect is that every single signature costs a full app switch — fine for signing in, painful for anything else.
+
+**For most apps, use NIP-46 with Amber-as-bunker instead.** Amber registers the `nostrconnect://` scheme, so mill's Remote Signer flow hands off to it directly: the user approves once, and all later signing happens over relays with no app switching. This is what Coracle, nostr-login, and most other web clients do.
+
+To opt in to NIP-55 anyway:
 
 ```js
 MILL.open({
@@ -219,103 +223,45 @@ MILL.open({
 });
 ```
 
-**For static sites (no backend), use NIP-46 with Amber-as-bunker instead** — it works on every mobile browser without any of NIP-55's redirect-handoff problems. Amber's QR-scanned bunker mode is the recommended mobile flow for purely client-side apps.
+### How the result comes back
 
-### Server-side callback for full NIP-55 support
+Amber's `sendResult()` has three branches, chosen by what you send:
 
-If your host application has a backend, you make NIP-55 reliable by giving Amber a callback URL on your server. The server captures the result and creates a session, so the browser tab/state mismatch doesn't matter.
+| You send | Amber does |
+|---|---|
+| A calling package (native app) | `setResult()` back to the caller |
+| A `callbackUrl` | Fires `ACTION_VIEW` at `callbackUrl + urlEncode(result)` |
+| **Neither** | **Copies the result to the clipboard** ← mill's default |
 
-#### Wire-up
+Mill defaults to the clipboard branch. It snapshots the clipboard before firing the intent (so stale content is never misread), then reads it back on `visibilitychange`/`focus` when you return from Amber, validating that the text looks like a pubkey, signature, or signed event. Requires HTTPS and a one-time clipboard-read permission grant.
 
-**1.** When opening mill, set the callback URL via the host element attribute or pass via the `<nostr-signer amber-callback="…">` attribute:
+### If you want a callback URL instead
+
+Set `amber-callback` / `amberCallback`. Two things are worth knowing, because both have bitten people:
+
+**Amber does not append a parameter name.** It literally concatenates: `callbackUrl + Uri.encode(result)`. A URL like `https://yoursite.com/amber-callback` therefore produces `https://yoursite.com/amber-callbackab12cd…` — the result is glued onto the path and the `?event=` you were expecting never exists. Your callback URL must already end in the separator and parameter name.
+
+**Amber ≥ 6.0.0 shreds query strings in the callback URL.** It URL-decodes the whole intent URI and *then* splits on `?`, so anything after a `?` inside your callback URL is silently dropped ([regression in `18db8c3d`](https://github.com/greenart7c3/Amber/commit/18db8c3d)). Percent-encoding does not help — the decode happens first. This broke every `?event=` callback in the wild as of Amber 6.0.0 (April 2026).
+
+Mill handles both for you: it normalises whatever you pass to a **`#event=` fragment**, which survives both the old and new parsers. Fragments are also never sent to the server, so the signature stays out of your access logs.
 
 ```html
-<nostr-signer
-  id="signer"
-  amber-callback="https://yoursite.com/amber-callback"
-  app-name="My App">
-</nostr-signer>
-
-<script>
-  document.getElementById('signer').open({
-    methods: ['nip07', 'nip46', 'nip55', 'newkey'],
-    onConnected: handleSignIn,
-  });
-</script>
+<nostr-signer amber-callback="https://yoursite.com/amber-callback" app-name="My App"></nostr-signer>
+<!-- mill sends: https://yoursite.com/amber-callback#event= -->
 ```
 
-**2.** Implement the callback route on your server. It receives `?event=<pubkey-hex>` from Amber and is responsible for:
-
-- Reading the pubkey from the query
-- Creating a session for that user (cookie / JWT / whatever)
-- Returning a small HTML page that closes itself or redirects back
-
-#### Go example (matches grain / pubkey-quest patterns)
-
-```go
-// /amber-callback handler
-func AmberCallback(w http.ResponseWriter, r *http.Request) {
-    pubkey := r.URL.Query().Get("event")
-    if pubkey == "" {
-        http.Error(w, "missing event param", http.StatusBadRequest)
-        return
-    }
-
-    // Validate it's a 64-char hex pubkey
-    if len(pubkey) != 64 {
-        http.Error(w, "invalid pubkey", http.StatusBadRequest)
-        return
-    }
-
-    // Create the user's session — your existing auth logic
-    sessionID, err := sessions.Create(pubkey, "amber")
-    if err != nil {
-        http.Error(w, "session creation failed", http.StatusInternalServerError)
-        return
-    }
-
-    http.SetCookie(w, &http.Cookie{
-        Name:     "session",
-        Value:    sessionID,
-        Path:     "/",
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteLaxMode,
-    })
-
-    // Render a tiny page that signals success back to the original tab
-    // and then closes itself / redirects.
-    fmt.Fprintf(w, `
-<!doctype html><html><body>
-  <script type="module">
-    import { deliverAmberCallback } from 'https://cdn.jsdelivr.net/npm/nostr-mill/dist/mill.esm.js';
-    deliverAmberCallback({ autoClose: true });
-    // Or redirect to your app:
-    // setTimeout(() => location.href = '/', 200);
-  </script>
-  <p>Signed in via Amber. Redirecting…</p>
-</body></html>`)
-}
-```
-
-Register the route:
-
-```go
-mux.HandleFunc("/amber-callback", AmberCallback)
-```
-
-**3.** When the user opens mill on a page that already has a session cookie, your existing session-check code picks it up — no further mill involvement needed.
+Because the result now arrives in a fragment, **a purely static page is enough** — there is no server-side step. If the callback lands on a different page from the one that opened Amber, call `deliverAmberCallback()` there to forward it.
 
 #### What `deliverAmberCallback()` does
 
 When the callback page is in a popup / new tab opened by mill:
 
-- Reads `?event=` and `?error=` from the URL
-- Writes the result to `localStorage` (key: `mill:amber:result`) — survives reloads
+- Reads the result from `#event=` (or a legacy `?event=` / `?error=`) in the URL
+- Writes it to `localStorage` (key: `mill:amber:result`) — survives reloads
 - Posts a message to `window.opener` if present
 - Auto-closes the callback window if `autoClose: true`
 
-Mill's host-page `awaitAmberResult` listener picks it up via the storage event or postMessage, and the original modal advances to the success step.
+Mill's host-page `awaitAmberResult` listener picks it up via the storage event, `hashchange`, or postMessage, and the original modal advances to the success step. `localStorage` is the load-bearing path here — Amber's `ACTION_VIEW` usually opens a *fresh* tab (possibly in a different browser) with no `window.opener`, so postMessage often has nothing to talk to.
 
 ---
 

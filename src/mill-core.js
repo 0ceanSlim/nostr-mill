@@ -32,14 +32,18 @@ import {
   createNIP07Signer, createNIP46Signer, createNIP55Signer,
   createPrivateKeySigner, createReadOnlySigner, installAsWindowNostr,
 } from './signers.js';
+import { kindLabel, kindNip, kindArticle } from './kinds.js';
+import {
+  DURATIONS, listGrants, saveGrant, revokeGrant, revokeAllGrants, sweepExpiredGrants,
+} from './grants.js';
 
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
   { id: 'notes',    label: 'Text Notes & Reactions', desc: 'kind 1, 6, 7, 16', icon: '📝', def: 'session' },
   { id: 'profile',  label: 'Profile Updates',         desc: 'kind 0',            icon: '👤', def: 'prompt'  },
   { id: 'contacts', label: 'Follow List Changes',     desc: 'kind 3',            icon: '👥', def: 'prompt'  },
-  { id: 'dms',      label: 'Encrypted Messages',      desc: 'kind 4, 14, 1059',  icon: '💬', def: 'prompt'  },
-  { id: 'zaps',     label: 'Zap Requests',            desc: 'kind 9734',         icon: '⚡', def: 'prompt'  },
+  { id: 'dms',      label: 'Encrypted Messages',      desc: 'kind 4, 13, 14, 1059', icon: '💬', def: 'prompt'  },
+  { id: 'zaps',     label: 'Zap Requests',            desc: 'kind 9734, 9735',   icon: '⚡', def: 'prompt'  },
   { id: 'other',    label: 'All Other Event Kinds',   desc: 'everything else',   icon: '📋', def: 'prompt'  },
 ];
 
@@ -76,17 +80,17 @@ const METHOD_META = {
 const METHODS_LIST = [
   { id: 'nip07',      label: 'Browser Extension', sub: 'NIP-07',        icon: '🧩', secLabel: 'Recommended',  secColor: 'var(--mill-success)' },
   { id: 'nip46',      label: 'Remote Signer',     sub: 'NIP-46 Bunker', icon: '📡', secLabel: 'High security', secColor: 'var(--mill-teal)'    },
-  { id: 'nip55',      label: 'Android Signer',    sub: 'NIP-55 · Amber',icon: '📱', secLabel: 'Needs server callback',  secColor: 'var(--mill-warning)'    },
+  { id: 'nip55',      label: 'Android Signer',    sub: 'NIP-55 · Amber',icon: '📱', secLabel: 'Android only',  secColor: 'var(--mill-warning)'    },
   { id: 'privatekey', label: 'Private Key',        sub: 'nsec / hex',    icon: '🔑', secLabel: 'Use with care', secColor: 'var(--mill-warning)' },
   { id: 'readonly',   label: 'Read Only',          sub: 'Public key',    icon: '👁', secLabel: 'View only',     secColor: 'var(--mill-muted)'   },
   { id: 'newkey',     label: 'New Identity',       sub: 'Generate keys', icon: '✨', secLabel: 'Brand new',     secColor: 'var(--mill-accent)'  },
 ];
 
 // Methods hidden from the default modal — code is intact, but hosts must opt in
-// via methods config. NIP-55 is hidden because the browser ⇄ Amber callback
-// loop requires a server-side handler to be reliable; without one, sign-in
-// usually stalls after the user approves in Amber. See README "NIP-55 host
-// integration" for the server-side wire-up.
+// via methods config. NIP-55 stays hidden not because it fails to connect (the
+// clipboard return path works with no host wire-up) but because Amber 6.2.2+
+// refuses to remember approvals for browser callers, so every signature costs a
+// full app switch. NIP-46 with Amber as a bunker is the better default.
 const DEFAULT_HIDDEN_METHODS = new Set(['nip55']);
 
 // ── Base CSS injected into Shadow DOM ─────────────────────────────────────────
@@ -377,6 +381,169 @@ const BASE_CSS = `
     display: flex; align-items: center; justify-content: center; font-size: 34px;
     border: 2px solid;
   }
+
+  /* ─ Signing permissions editor ─ */
+  .mill-perm { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Collapsed summary — the default view. Full editor is opt-in. */
+  .mill-perm-summary {
+    display: flex; align-items: center; gap: 11px;
+    padding: 12px 14px;
+    background: var(--mill-inset);
+    border: 1px solid var(--mill-border);
+    border-radius: 10px;
+  }
+  .mill-perm-summary-text { flex: 1; min-width: 0; }
+  .mill-perm-summary-title {
+    font-size: 13px; font-weight: 600; margin-bottom: 2px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .mill-perm-summary-sub {
+    font-size: 11.5px; color: var(--mill-text-secondary); line-height: 1.5;
+  }
+  .mill-perm-toggle {
+    background: none; border: 1px solid var(--mill-border-light);
+    color: var(--mill-text-secondary);
+    font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
+    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    flex-shrink: 0; transition: all 0.15s; white-space: nowrap;
+  }
+  .mill-perm-toggle:hover { color: var(--mill-text); border-color: var(--mill-accent); }
+
+  .mill-perm-legend {
+    display: flex; flex-direction: column; gap: 4px;
+    margin-bottom: 2px; font-size: 11.5px;
+  }
+  .mill-perm-legend-row {
+    display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  }
+
+  .mill-perm-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 9px 12px;
+    background: var(--mill-inset);
+    border: 1px solid var(--mill-border);
+    border-radius: 10px;
+  }
+  .mill-perm-row-left {
+    display: flex; gap: 9px; align-items: center; min-width: 0;
+  }
+  .mill-perm-row-label { font-size: 13px; font-weight: 500; }
+  .mill-perm-row-kinds {
+    font-size: 10.5px; color: var(--mill-muted); font-family: var(--mill-font-mono);
+  }
+  .mill-perm-pills {
+    display: flex; gap: 3px; flex-shrink: 0;
+    background: var(--mill-inset); border-radius: 20px; padding: 3px;
+  }
+  .mill-perm-pill {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 11px; border-radius: 16px;
+    font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
+    border: 1px solid transparent; cursor: pointer;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .mill-perm-pill-sub { font-size: 10px; opacity: 0.7; }
+
+  /* ─ Signing consent card ─ */
+  .mill-consent-head {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px; border-radius: 12px;
+    background: var(--mill-inset); border: 1px solid var(--mill-border);
+  }
+  .mill-consent-icon { font-size: 26px; line-height: 1; flex-shrink: 0; }
+  .mill-consent-ask { font-size: 15px; line-height: 1.45; min-width: 0; }
+  .mill-consent-kind { font-weight: 700; color: var(--mill-accent); }
+  .mill-consent-as {
+    font-size: 11.5px; color: var(--mill-muted); margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .mill-consent-toggle {
+    background: none; border: none; cursor: pointer;
+    color: var(--mill-text-secondary); font-family: var(--mill-font);
+    font-size: 12px; font-weight: 600; padding: 6px 0;
+    display: flex; align-items: center; gap: 5px; align-self: flex-start;
+  }
+  .mill-consent-toggle:hover { color: var(--mill-text); }
+
+  .mill-consent-details {
+    background: var(--mill-inset); border: 1px solid var(--mill-border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .mill-consent-field {
+    display: flex; gap: 10px; padding: 8px 12px;
+    border-bottom: 1px solid var(--mill-border); font-size: 12px;
+  }
+  .mill-consent-field:last-child { border-bottom: none; }
+  .mill-consent-field-k {
+    color: var(--mill-muted); text-transform: uppercase; letter-spacing: 0.08em;
+    font-size: 10px; font-weight: 600; width: 62px; flex-shrink: 0; padding-top: 2px;
+  }
+  .mill-consent-field-v {
+    min-width: 0; flex: 1; overflow-wrap: anywhere; white-space: pre-wrap;
+    font-family: var(--mill-font-mono); line-height: 1.5;
+    max-height: 140px; overflow-y: auto;
+  }
+
+  .mill-consent-remember { display: flex; flex-direction: column; gap: 7px; }
+  .mill-consent-remember-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--mill-muted); font-weight: 600;
+  }
+  .mill-consent-durations { display: flex; flex-wrap: wrap; gap: 5px; }
+  .mill-consent-dur {
+    padding: 5px 11px; border-radius: 16px;
+    font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
+    border: 1px solid var(--mill-border); background: transparent;
+    color: var(--mill-muted); cursor: pointer; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .mill-consent-dur.active {
+    border-color: var(--mill-accent); color: var(--mill-accent);
+    background: color-mix(in srgb, var(--mill-accent) 13%, transparent);
+  }
+  .mill-consent-manage {
+    background: none; border: none; cursor: pointer; padding: 0;
+    color: var(--mill-muted); font-family: var(--mill-font);
+    font-size: 11.5px; text-decoration: underline; align-self: flex-start;
+  }
+  .mill-consent-manage:hover { color: var(--mill-text-secondary); }
+
+  /* ─ Permissions management ─ */
+  .mill-grant-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 9px 12px;
+    background: var(--mill-inset); border: 1px solid var(--mill-border);
+    border-radius: 10px;
+  }
+  .mill-grant-left { min-width: 0; }
+  .mill-grant-kind { font-size: 13px; font-weight: 500; }
+  .mill-grant-meta {
+    font-size: 10.5px; color: var(--mill-muted); font-family: var(--mill-font-mono);
+  }
+  .mill-grant-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .mill-grant-btn {
+    padding: 4px 10px; border-radius: 14px;
+    font-family: var(--mill-font); font-size: 11px; font-weight: 600;
+    border: 1px solid transparent; background: transparent;
+    color: var(--mill-muted); cursor: pointer; transition: all 0.15s;
+  }
+
+  /* Narrow viewports: stack the pills under the label so nothing overflows.
+     Rules must live here (not inline) so this media query can win. */
+  @media (max-width: 460px) {
+    .mill-grant-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .mill-grant-actions { width: 100%; }
+    .mill-grant-btn { flex: 1; }
+    .mill-consent-dur { flex: 1 1 auto; text-align: center; }
+    .mill-perm-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .mill-perm-pills { width: 100%; }
+    .mill-perm-pill { flex: 1; justify-content: center; padding: 6px 8px; }
+    .mill-perm-pill-sub { display: none; }
+    .mill-perm-summary { flex-direction: column; align-items: stretch; gap: 10px; }
+    .mill-perm-toggle { width: 100%; padding: 8px 12px; }
+  }
 `;
 
 // ── HTML builder helpers ──────────────────────────────────────────────────────
@@ -509,31 +676,76 @@ function flowWrap({ step, total, title, subtitle, onBack }) {
 }
 
 // ── Signing behavior editor ───────────────────────────────────────────────────
+// Plain-language description of the current policy, for the collapsed summary.
+// Most users never open the editor, so this line has to carry the meaning on
+// its own — no jargon, no kind numbers.
+function permsSummary(perms) {
+  const ids      = SIGN_CATS.map(c => c.id);
+  const isCustom = ids.some(id => perms[id] !== SIGN_CATS.find(c => c.id === id).def);
+  if (!isCustom) return 'Post and react without re-entering your password. Profile, follows, messages, and zaps ask each time.';
+
+  const session = SIGN_CATS.filter(c => perms[c.id] === 'session');
+  if (!session.length)             return 'Your password is required every time anything is signed.';
+  if (session.length === ids.length) return 'Password entered once per session — nothing prompts again until you close this tab.';
+  const names = session.map(c => c.label.toLowerCase());
+  const list  = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `Unlocked once per session for ${list}. Everything else asks each time.`;
+}
+
 function signingBehaviorEditor(perms) {
-  const wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } });
+  const wrap = h('div', { class: 'mill-perm' });
+
+  // Collapsed by default: the defaults are sensible, and the full six-category
+  // grid is a lot of screen for a decision most users don't want to make.
+  let open = false;
+  const summary = h('div', { class: 'mill-perm-summary' });
+  const details = h('div', { class: 'mill-perm', style: { display: 'none' } });
+
+  const summaryText = h('div', { class: 'mill-perm-summary-sub' });
+  const toggle = h('button', { class: 'mill-perm-toggle', type: 'button' });
+
+  const refreshSummary = () => { summaryText.textContent = permsSummary(perms); };
+  const applyOpen = () => {
+    details.style.display = open ? 'flex' : 'none';
+    toggle.textContent    = open ? 'Done' : 'Customize';
+    toggle.setAttribute('aria-expanded', String(open));
+    refreshSummary();
+  };
+  toggle.onclick = () => { open = !open; applyOpen(); };
+
+  summary.appendChild(h('div', { class: 'mill-perm-summary-text' },
+    h('div', { class: 'mill-perm-summary-title' },
+      h('span', {}, '🔐'),
+      h('span', {}, 'Signing permissions'),
+      h('span', { style: { fontSize: '10.5px', fontWeight: '600', color: 'var(--mill-success)', textTransform: 'uppercase', letterSpacing: '0.08em' } }, 'Recommended')
+    ),
+    summaryText
+  ));
+  summary.appendChild(toggle);
+  wrap.appendChild(summary);
 
   // Legend with descriptions
-  const legend = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px' } });
+  const legend = h('div', { class: 'mill-perm-legend' });
   PERM_OPTS.forEach(o => {
-    legend.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', flexWrap: 'wrap' } },
+    legend.appendChild(h('div', { class: 'mill-perm-legend-row' },
       h('span', {}, o.icon),
       h('span', { style: { fontWeight: '600', color: o.color } }, `${o.label} ${o.sublabel}`),
       h('span', { style: { color: 'var(--mill-muted)' } }, '—'),
       h('span', { style: { color: 'var(--mill-text-secondary)' } }, o.desc)
     ));
   });
-  wrap.appendChild(legend);
+  details.appendChild(legend);
 
   SIGN_CATS.forEach(cat => {
-    const row = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 12px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px' } });
-    const left = h('div', { style: { display: 'flex', gap: '9px', alignItems: 'center' } },
+    const row = h('div', { class: 'mill-perm-row' });
+    const left = h('div', { class: 'mill-perm-row-left' },
       h('span', { style: { fontSize: '17px' } }, cat.icon),
-      h('div', {},
-        h('div', { style: { fontSize: '13px', fontWeight: '500' } }, cat.label),
-        h('div', { style: { fontSize: '10.5px', color: 'var(--mill-muted)', fontFamily: 'var(--mill-font-mono)' } }, cat.desc)
+      h('div', { style: { minWidth: '0' } },
+        h('div', { class: 'mill-perm-row-label' }, cat.label),
+        h('div', { class: 'mill-perm-row-kinds' }, cat.desc)
       )
     );
-    const pillBox = h('div', { style: { display: 'flex', gap: '3px', background: 'var(--mill-inset)', borderRadius: '20px', padding: '3px' } });
+    const pillBox = h('div', { class: 'mill-perm-pills' });
     PERM_OPTS.forEach(o => {
       const apply = (el, active) => {
         el.style.background  = active ? o.color + '22' : 'transparent';
@@ -541,26 +753,30 @@ function signingBehaviorEditor(perms) {
         el.style.color       = active ? o.color : 'var(--mill-muted)';
       };
       const p = h('button', {
-        style: { padding: '4px 11px', borderRadius: '16px', fontSize: '11.5px', fontWeight: '600', fontFamily: 'var(--mill-font)', cursor: 'pointer', border: '1px solid transparent', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.15s' },
+        class: 'mill-perm-pill',
+        type: 'button',
         onClick: () => {
           perms[cat.id] = o.id;
           pillBox.querySelectorAll('button').forEach((pp, i) => apply(pp, PERM_OPTS[i].id === o.id));
+          refreshSummary();
         },
       },
         h('span', { style: { fontSize: '11px' } }, o.icon),
         h('span', {}, o.label),
-        h('span', { style: { fontSize: '10px', opacity: '0.7' } }, o.sublabel)
+        h('span', { class: 'mill-perm-pill-sub' }, o.sublabel)
       );
       apply(p, perms[cat.id] === o.id);
       pillBox.appendChild(p);
     });
     row.appendChild(left); row.appendChild(pillBox);
-    wrap.appendChild(row);
+    details.appendChild(row);
   });
 
-  wrap.appendChild(badge('muted', 'ℹ️', null,
+  details.appendChild(badge('muted', 'ℹ️', null,
     'These settings only apply to private-key signing. NIP-07, NIP-46, and NIP-55 manage their own approval prompts inside the extension or app.'
   ));
+  wrap.appendChild(details);
+  applyOpen();
   return wrap;
 }
 
@@ -1033,22 +1249,29 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
 // ── Flow: NIP-55 ──────────────────────────────────────────────────────────────
 function renderNIP55Flow(host, onDone, onBack) {
   let step = 0, pubkey = '', errMsg = '';
-  // Host can override via attribute on the element; fall back to current page.
-  const callbackUrl = host.getAttribute?.('amber-callback') || window.location.href.split('?')[0];
+  // Only use a callback round-trip if the host explicitly opted in. Defaulting
+  // to the current page never worked: Amber concatenates the result onto the
+  // URL verbatim, so a URL with no `#event=` suffix loses it entirely. With no
+  // callbackUrl, Amber falls back to the clipboard — which needs no host code.
+  const callbackUrl = host.getAttribute?.('amber-callback') || null;
   const appName     = host.getAttribute?.('app-name') || document.title || 'Nostr App';
   const container = h('div', {});
 
   async function startAmber(render) {
-    if (isLocalhost()) {
+    if (callbackUrl && isLocalhost()) {
       errMsg = 'Amber callbacks cannot reach localhost. Use NIP-07 or NIP-46 for local dev.';
       render(); return;
     }
     step = 1; errMsg = ''; render();
     try {
-      const { buildAmberURL, openAmberIntent, awaitAmberResult } = await import('./nip55.js');
+      const { buildAmberURL, openAmberIntent, awaitAmberResult, awaitAmberClipboard, snapshotClipboard } = await import('./nip55.js');
+      // Snapshot before firing so stale clipboard content can't be misread.
+      const before = callbackUrl ? '' : await snapshotClipboard();
       const url = buildAmberURL({ type: 'get_public_key', callbackUrl, appName });
       openAmberIntent(url);
-      const raw = await awaitAmberResult({ timeoutMs: 60_000 });
+      const raw = callbackUrl
+        ? await awaitAmberResult({ timeoutMs: 60_000 })
+        : await awaitAmberClipboard({ timeoutMs: 60_000, before });
       // For get_public_key, Amber returns the pubkey hex in `event` param
       pubkey = raw.toLowerCase().replace(/^npub1.*$/i, '');  // accept either
       if (!/^[0-9a-f]{64}$/.test(pubkey)) {
@@ -1067,7 +1290,7 @@ function renderNIP55Flow(host, onDone, onBack) {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Android Signer (NIP-55)', subtitle: 'Use Amber or another Android signer app. Communication via Android intents — no network between apps.', onBack });
       body.appendChild(badge('info', '📱', 'How NIP-55 works', 'NIP-55 uses Android\'s intent system to send signing requests to a local app. No relay or internet needed between this app and your signer.'));
       body.appendChild(badge('warning', '⚠️', 'Android only', 'NIP-55 requires Android with a compatible signer app. On iOS or desktop, use NIP-07 (browser extension) or NIP-46 (remote signer) instead.'));
-      body.appendChild(badge('warning', '🔁', 'Web-app limitation', 'The browser ⇄ Amber ⇄ browser handoff is browser-dependent. If sign-in stalls after approving in Amber, try the Remote Signer (NIP-46) option instead — it works with Amber as a bunker over relays and is more reliable for mobile web apps.'));
+      body.appendChild(badge('warning', '🔁', 'Approves one request at a time', 'Amber 6.2.2+ deliberately never remembers approvals for web pages, so every single signature needs a fresh app switch. For anything beyond signing in, use Remote Signer (NIP-46) — Amber works as a bunker over relays, and you approve just once.'));
       body.appendChild(h('div', { style: { padding: '12px 14px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px' } },
         h('div', { style: { fontSize: '14px', fontWeight: '600', marginBottom: '3px' } }, 'Amber'),
         h('div', { style: { fontSize: '12px', color: 'var(--mill-muted)', lineHeight: '1.5' } }, 'Open-source Android NIP-55 signer by greenart7c3. Install from F-Droid, GitHub Releases, or Google Play.')
@@ -1167,8 +1390,11 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
         const encrypted = await encryptNsec(hexKey, pw);
         storeEncryptedNsec(encrypted);
         storeSignPerms(perms);   // so MILL.restore() can rebuild with the same policy after reload
-        const promptPassword = () => Promise.resolve(pw);  // session unlock
-        const signer = createPrivateKeySigner({ pubkey: pubHex, perms, promptPassword });
+        const signer = createPrivateKeySigner({
+          pubkey: pubHex, perms,
+          promptPassword: sessionPrompt(host, pw),
+          requestConsent: req => host.requestConsent({ ...req, npub: hexToNpub(pubHex) }),
+        });
         onDone({ method: 'privatekey', pubkey: pubHex, perms, signer });
       }));
       container.appendChild(wrap);
@@ -1258,8 +1484,11 @@ function renderNewKeypairFlow(host, onDone, onBack) {
         const encrypted = await encryptNsec(keys.privHex, pw);
         storeEncryptedNsec(encrypted);
         storeSignPerms(perms);   // so MILL.restore() can rebuild with the same policy after reload
-        const promptPassword = () => Promise.resolve(pw);
-        const signer = createPrivateKeySigner({ pubkey: keys.pubHex, perms, promptPassword });
+        const signer = createPrivateKeySigner({
+          pubkey: keys.pubHex, perms,
+          promptPassword: sessionPrompt(host, pw),
+          requestConsent: req => host.requestConsent({ ...req, npub: keys.npub }),
+        });
         onDone({ method: 'newkey', pubkey: keys.pubHex, nsec: keys.nsec, perms, signer });
       }));
       container.appendChild(wrap);
@@ -1294,6 +1523,173 @@ function renderConnectedScreen(result, onDisconnect) {
 // ── Flow: Unlock (standalone password prompt for restore) ─────────────────────
 // Shown by MILL.restore() when a private-key signer needs the session password
 // after a reload — the full picker stays closed; only the password is asked.
+// ── Flow: signing consent ─────────────────────────────────────────────────────
+// Shown per signature when neither a per-kind grant nor the category policy
+// has already authorised it. Deliberately minimal by default — Amber shows one
+// sentence and hides the payload behind "Show Details"; dumping raw JSON at
+// someone every time trains them to click through without reading.
+function renderConsentFlow(host, req, onDecide) {
+  const { event, label, category } = req;
+  let showDetails = false;
+  let duration = 'once';                 // safe default: remember nothing
+  const container = h('div', {});
+
+  const appName = host.getAttribute?.('app-name') || document.title || 'This app';
+  const npub    = req.npub || '';
+
+  function render() {
+    container.innerHTML = '';
+    const { wrap, body, footer } = flowWrap({
+      step: 0, total: 1,
+      title: 'Approve Signing',
+      subtitle: 'Review this request before it is signed with your private key.',
+    });
+
+    const head = h('div', { class: 'mill-consent-head' });
+    head.appendChild(h('div', { class: 'mill-consent-icon' }, '✍️'));
+    const ask = h('div', { class: 'mill-consent-ask' });
+    ask.appendChild(h('div', {},
+      h('span', {}, `${appName} wants you to sign ${kindArticle(label)} `),
+      h('span', { class: 'mill-consent-kind' }, label),
+    ));
+    if (npub) ask.appendChild(h('div', { class: 'mill-consent-as' }, `Signing as ${npub}`));
+    head.appendChild(ask);
+    body.appendChild(head);
+
+    const toggle = h('button', { class: 'mill-consent-toggle', type: 'button',
+      onClick: () => { showDetails = !showDetails; render(); } },
+      h('span', {}, showDetails ? '▾' : '▸'),
+      h('span', {}, showDetails ? 'Hide details' : 'Show details'),
+    );
+    body.appendChild(toggle);
+
+    if (showDetails) {
+      const d = h('div', { class: 'mill-consent-details' });
+      const field = (k, v) => {
+        if (v === null || v === undefined || v === '') return;
+        d.appendChild(h('div', { class: 'mill-consent-field' },
+          h('div', { class: 'mill-consent-field-k' }, k),
+          h('div', { class: 'mill-consent-field-v' }, String(v)),
+        ));
+      };
+      const nip = kindNip(event?.kind);
+      field('Kind', nip ? `${event?.kind} — ${label} (${nip})` : `${event?.kind} — ${label}`);
+      if (event?.created_at) {
+        const ts = new Date(event.created_at * 1000);
+        field('Date', isNaN(ts) ? String(event.created_at) : ts.toLocaleString());
+      }
+      // Content is shown decoded, not as escaped JSON — the point is that a
+      // person can actually read what they're signing.
+      field('Content', event?.content ?? '');
+      const tags = Array.isArray(event?.tags) ? event.tags : [];
+      if (tags.length) field('Tags', tags.map(t => Array.isArray(t) ? t.join(' · ') : String(t)).join('\n'));
+      body.appendChild(d);
+    }
+
+    const remember = h('div', { class: 'mill-consent-remember' });
+    remember.appendChild(h('div', { class: 'mill-consent-remember-label' }, `Remember for ${label}`));
+    const durs = h('div', { class: 'mill-consent-durations' });
+    DURATIONS.forEach(o => {
+      durs.appendChild(h('button', {
+        class: `mill-consent-dur${duration === o.id ? ' active' : ''}`,
+        type: 'button',
+        onClick: () => { duration = o.id; render(); },
+      }, o.label));
+    });
+    remember.appendChild(durs);
+    body.appendChild(remember);
+
+    // Mill is only ever on screen when it's asking for something, so this is
+    // the one reliable place to offer a way into its settings — no host-app
+    // menu wiring required.
+    body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button',
+      onClick: () => onDecide({ manage: true }) }, 'Manage permissions'));
+
+    // The chosen duration applies to whichever button is pressed, so
+    // "reject this kind for an hour" is expressible — same as Amber.
+    footer.appendChild(btn('Reject', 'ghost', () => onDecide({ approved: false, duration })));
+    footer.appendChild(btn('Approve & Sign', 'primary', () => onDecide({ approved: true, duration })));
+    container.appendChild(wrap);
+  }
+  render();
+  return container;
+}
+
+// ── Flow: permissions manager ─────────────────────────────────────────────────
+// Lists every live per-kind grant with the same two controls as the consent
+// card — what, and for how long — so the two screens read as one system.
+function renderPermissionsScreen(host, onBack) {
+  const container = h('div', {});
+
+  function render() {
+    container.innerHTML = '';
+    sweepExpiredGrants();
+    const grants = listGrants();
+    const { wrap, body, footer } = flowWrap({
+      step: 0, total: 1,
+      title: 'Signing Permissions',
+      subtitle: 'Kinds you have already approved or blocked. Removing one means mill will ask again next time.',
+      onBack,
+    });
+
+    if (!grants.length) {
+      body.appendChild(badge('muted', '🗂', 'Nothing remembered yet',
+        'When you approve a signing request and choose to remember it, it shows up here. Requests you approve "just this time" are never stored.'));
+    } else {
+      grants.forEach(g => {
+        const row = h('div', { class: 'mill-grant-row' });
+        const allowed = g.action !== 'deny';
+        const when = g.dur === 'always' ? 'Always'
+          : g.dur === 'session' ? 'This session'
+          : `Until ${new Date(g.until).toLocaleTimeString()}`;
+        row.appendChild(h('div', { class: 'mill-grant-left' },
+          h('div', { class: 'mill-grant-kind' },
+            `${allowed ? '✅' : '⛔'} ${kindLabel(g.kind)}`),
+          h('div', { class: 'mill-grant-meta' }, `kind ${g.kind} · ${allowed ? 'allowed' : 'blocked'} · ${when}`),
+        ));
+        const actions = h('div', { class: 'mill-grant-actions' });
+        const mk = (text, active, color, onClick) => {
+          const b = h('button', { class: 'mill-grant-btn', type: 'button', onClick }, text);
+          if (active) { b.style.borderColor = color; b.style.color = color; b.style.background = color + '1f'; }
+          return b;
+        };
+        actions.appendChild(mk('Allow', allowed, 'var(--mill-success)',
+          () => { saveGrant(g.kind, 'allow', g.dur || 'session'); render(); }));
+        actions.appendChild(mk('Block', !allowed, 'var(--mill-danger)',
+          () => { saveGrant(g.kind, 'deny', g.dur || 'session'); render(); }));
+        actions.appendChild(mk('Ask', false, 'var(--mill-accent)',
+          () => { revokeGrant(g.kind); render(); }));
+        row.appendChild(actions);
+        body.appendChild(row);
+      });
+      body.appendChild(h('div', { class: 'mill-hint' },
+        'These apply only to private-key signing in this browser. NIP-07, NIP-46, and NIP-55 manage approvals in their own app.'));
+    }
+
+    if (grants.length) {
+      footer.appendChild(btn('Forget all', 'ghost', () => { revokeAllGrants(); render(); }));
+    }
+    footer.appendChild(btn('Done', 'primary', onBack));
+    container.appendChild(wrap);
+  }
+  render();
+  return container;
+}
+
+// Password provider for a signer created during a fresh login.
+//
+// This is the UNLOCK gate only — consent is a separate gate handled by the
+// consent card. The user typed this password seconds ago to log in, so that
+// already is their once-per-session unlock; asking again here would stack a
+// password prompt on top of every approval, which is the friction the
+// two-gate split exists to remove.
+//
+// Authorisation is NOT weakened by this: an unauthorised kind never reaches
+// unlock(), because authorize() throws first.
+function sessionPrompt(_host, pw) {
+  return () => Promise.resolve(pw);
+}
+
 function renderUnlockFlow(host, onSubmit, onCancel, opts = {}) {
   let pw = '', errMsg = '';
   const container = h('div', {});
@@ -1328,7 +1724,7 @@ class NostrSignerElement extends HTMLElement {
   constructor() {
     super();
     this._shadow = this.attachShadow({ mode: 'open' });
-    this._state = { open: false, method: null, connected: null };
+    this._state = { open: false, method: null, connected: null, consent: null, settings: false };
     this._callbacks = { onConnected: null, onClose: null };
   }
 
@@ -1400,9 +1796,39 @@ class NostrSignerElement extends HTMLElement {
     });
   }
 
+  /**
+   * Open the signing consent card and resolve with the user's decision:
+   * { approved: boolean, duration: 'once'|'5m'|'1h'|'session'|'always' }.
+   * Resolves { approved: false } if the modal is dismissed — a request the
+   * user walked away from must never count as approval.
+   */
+  requestConsent(req) {
+    return new Promise(resolve => {
+      this._state.consent = { ...req, npub: req.npub || this._state.connected?.signer?.npub || '', resolve };
+      this._state.open = true;
+      this._state.method = null;
+      this._render();
+    });
+  }
+
+  /** Open the permissions manager. Optional for hosts; the consent card links here. */
+  openSettings() {
+    this._state.settings = true;
+    this._state.open = true;
+    this._state.method = null;
+    this._render();
+  }
+
   close() {
     // Resolve a pending unlock prompt as cancelled so callers don't hang.
     if (this._state.unlock) { const u = this._state.unlock; this._state.unlock = null; u.resolve(null); }
+    // Dismissing a consent card is a refusal, never a silent approval, and it
+    // must not be remembered — the user made no choice about future requests.
+    if (this._state.consent) {
+      const c = this._state.consent; this._state.consent = null;
+      c.resolve({ approved: false, duration: 'once' });
+    }
+    this._state.settings = false;
     this._state.open = false;
     this._render();
     this._callbacks.onClose?.();
@@ -1442,7 +1868,29 @@ class NostrSignerElement extends HTMLElement {
       this._render();
     };
 
-    if (this._state.unlock) {
+    if (this._state.consent) {
+      const decide = (decision) => {
+        // "Manage permissions" keeps the request pending — the user is still
+        // deciding, and settings changes should inform that decision.
+        if (decision?.manage) { this._state.settings = true; this._render(); return; }
+        const c = this._state.consent;
+        this._state.consent = null;
+        this._state.open = false;
+        this._render();
+        c?.resolve(decision);
+      };
+      if (this._state.settings) {
+        body.appendChild(renderPermissionsScreen(this, () => { this._state.settings = false; this._render(); }));
+      } else {
+        body.appendChild(renderConsentFlow(this, this._state.consent, decide));
+      }
+    } else if (this._state.settings) {
+      body.appendChild(renderPermissionsScreen(this, () => {
+        this._state.settings = false;
+        this._state.open = false;
+        this._render();
+      }));
+    } else if (this._state.unlock) {
       const finish = (pw) => {
         const u = this._state.unlock;
         this._state.unlock = null;
@@ -1566,6 +2014,7 @@ const MILL = {
           pubkey,
           perms: loadSignPerms() || defaultPerms(),
           promptPassword: () => el.promptPassword({ subtitle: 'Enter your session password to unlock signing.' }),
+          requestConsent: req => el.requestConsent({ ...req, npub: hexToNpub(pubkey) }),
         });
       }
 
@@ -1584,7 +2033,7 @@ const MILL = {
 
       case 'nip55': {
         if (!pubkey) return null;
-        const callbackUrl = _imperativeEl?.getAttribute?.('amber-callback') || window.location.href.split('?')[0];
+        const callbackUrl = _imperativeEl?.getAttribute?.('amber-callback') || null;
         const appName = _imperativeEl?.getAttribute?.('app-name') || document.title || 'Nostr App';
         return createNIP55Signer({ pubkey, callbackUrl, appName });
       }
@@ -1608,6 +2057,16 @@ const MILL = {
 
   /** Close the modal programmatically. */
   close() { _imperativeEl?.close(); },
+
+  /**
+   * Open the per-kind signing-permissions manager.
+   *
+   * Entirely optional — the consent card already links here, and mill is only
+   * on screen when it's asking for something, so a host that never calls this
+   * still gives users a way in. Wire it to a menu item if you want a direct
+   * route. Private-key signing only; other methods manage approvals elsewhere.
+   */
+  openSettings() { _getOrCreateElement().openSettings(); },
 
   /** Expose theme utilities. */
   themes: THEMES,
