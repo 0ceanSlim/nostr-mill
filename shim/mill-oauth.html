@@ -1,0 +1,167 @@
+<!doctype html>
+<!--
+  MILL — OAuth popup shim.
+
+  Deploy this ONE static file at a stable origin you control, and register that
+  origin as an "Authorized JavaScript Origin" on your Google OAuth client.
+
+  Why this file has to exist
+  --------------------------
+  Google validates the OAuth flow against the origin of the page that runs it.
+  A drop-in library embedded on arbitrary third-party sites therefore cannot
+  run the flow in the host page — every host would need its own client_id.
+
+  That is not merely inconvenient: `drive.appdata` is scoped PER OAUTH CLIENT,
+  so a per-host client_id would give each host app a SEPARATE app-data folder
+  for the same user. Log in on app A, create a key; log in on app B, find
+  nothing, create a second key. Identity would fragment per app.
+
+  One shared client_id, anchored to one origin, is what makes "log in with
+  Google" mean the same Nostr identity everywhere. This page is that anchor.
+
+  It holds no secret. An OAuth client_id is public by design; the security
+  boundary is the registered origin, which is exactly what this file provides.
+
+  Note the asymmetry with passkeys: for OAuth the *GCP project* owns the data,
+  not the domain. If you ever move this page to a new domain, re-register the
+  origin and users keep their backups. Nothing is lost.
+
+  Setup
+  -----
+  1. Google Cloud Console -> APIs & Services -> Credentials
+     -> Create OAuth client ID -> Web application.
+     Free; no billing account required.
+  2. Add this page's origin under "Authorized JavaScript origins"
+     (origin only, e.g. https://auth.example.com — no path).
+  3. Enable the Google Drive API for the project.
+  4. Set MILL_CLIENT_ID below.
+  5. Add every host origin allowed to use this shim to MILL_ALLOWED_ORIGINS.
+     Leave it empty ONLY if you intend any site to be able to use it.
+
+  The consent screen may stay in "Testing" while you develop (capped at 100
+  users). Publishing to Production needs no review for this scope, because
+  drive.appdata is classified non-sensitive.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="strict-origin">
+<title>Signing in…</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 24px;
+    text-align: center; background: Canvas; color: CanvasText;
+  }
+  .msg { max-width: 22rem; }
+  .err { color: #c0392b; }
+  .spin {
+    width: 26px; height: 26px; margin: 0 auto 14px;
+    border: 3px solid rgba(128,128,128,.3); border-top-color: currentColor;
+    border-radius: 50%; animation: s .8s linear infinite;
+  }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="msg">
+  <div class="spin" id="spin"></div>
+  <div id="status">Connecting to Google…</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Configure these two ────────────────────────────────────────────────────
+  var MILL_CLIENT_ID = 'REPLACE_ME.apps.googleusercontent.com';
+  // Origins permitted to open this shim. Empty array = allow any (not advised).
+  var MILL_ALLOWED_ORIGINS = [
+    // 'https://yourapp.com',
+  ];
+  // ───────────────────────────────────────────────────────────────────────────
+
+  var SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+  var statusEl = document.getElementById('status');
+  var spinEl = document.getElementById('spin');
+
+  function show(text, isError) {
+    statusEl.textContent = text;
+    statusEl.className = isError ? 'err' : '';
+    if (isError) spinEl.style.display = 'none';
+  }
+
+  // The opener's origin is the only place a token may be sent. Read it from
+  // the fragment (never the query — fragments are not sent to servers, so the
+  // value stays out of access logs and Referer headers).
+  var opener = window.opener;
+  if (!opener) { show('Open this page from the app you are signing in to.', true); return; }
+
+  var params = new URLSearchParams(location.hash.slice(1));
+  var target = params.get('origin') || '';
+  var nonce  = params.get('nonce')  || '';
+
+  if (!/^https:\/\/[^\/]+$/.test(target) && !/^http:\/\/localhost(:\d+)?$/.test(target)) {
+    show('Invalid origin.', true); return;
+  }
+  if (MILL_ALLOWED_ORIGINS.length && MILL_ALLOWED_ORIGINS.indexOf(target) === -1) {
+    show('This site is not authorized to use this sign-in page.', true); return;
+  }
+  if (MILL_CLIENT_ID.indexOf('REPLACE_ME') === 0) {
+    show('This sign-in page is not configured yet (missing client ID).', true); return;
+  }
+
+  function reply(payload) {
+    payload.nonce = nonce;
+    payload.source = 'mill-oauth';
+    try { opener.postMessage(payload, target); } catch (e) {}
+    setTimeout(function () { try { window.close(); } catch (e) {} }, 150);
+  }
+
+  window.addEventListener('message', function (e) {
+    // Only the opener may talk to us, and only to cancel.
+    if (e.origin !== target || e.source !== opener) return;
+    if (e.data && e.data.millCancel) { try { window.close(); } catch (err) {} }
+  });
+
+  var s = document.createElement('script');
+  s.src = 'https://accounts.google.com/gsi/client';
+  s.async = true;
+  s.onerror = function () { show('Could not reach Google. Check your connection and try again.', true); };
+  s.onload = function () {
+    try {
+      var client = google.accounts.oauth2.initTokenClient({
+        client_id: MILL_CLIENT_ID,
+        scope: SCOPE,
+        prompt: '',
+        callback: function (resp) {
+          if (resp && resp.access_token) {
+            reply({
+              ok: true,
+              accessToken: resp.access_token,
+              expiresIn: resp.expires_in,
+              scope: resp.scope,
+            });
+          } else {
+            reply({ ok: false, error: (resp && resp.error) || 'no_token' });
+          }
+        },
+        error_callback: function (err) {
+          reply({ ok: false, error: (err && err.type) || 'popup_failed' });
+        },
+      });
+      show('Waiting for Google…');
+      client.requestAccessToken();
+    } catch (err) {
+      show('Sign-in failed to start.', true);
+      reply({ ok: false, error: String((err && err.message) || err) });
+    }
+  };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>
