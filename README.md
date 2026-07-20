@@ -25,7 +25,7 @@ Drop it into any web app with a `<script>` tag. Works with every Nostr signing m
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -201,6 +201,51 @@ type MillResult = {
 //   'prompt'  — show the consent card and let the user decide
 type SigningPerms = Record<string, 'session' | 'prompt'>;
 ```
+
+---
+
+## Continue with Google (cloud-backed key) — opt-in
+
+A "normie" onboarding path: mill generates and holds the key, the user sees only
+a 4-digit PIN, and their nsec is encrypted and stored in **their own** Google
+Drive (the hidden `appDataFolder`). Returning users sign in on any device with
+their PIN. "Take control of my keys" (on the connected screen) reveals the nsec
+and exports a portable NIP-49 `ncryptsec` whenever they choose.
+
+This is **off unless you configure it**, and existing hosts see no change to the
+picker until they do. It needs a small amount of setup because Google binds
+OAuth to a registered origin — see [`shim/mill-oauth.html`](shim/mill-oauth.html).
+
+```js
+MILL.open({ oauthShim: 'https://auth.yourdomain.com/mill-oauth.html' });
+// or: <nostr-signer oauth-shim="https://auth.yourdomain.com/mill-oauth.html">
+```
+
+**One-time setup (free, no billing account):**
+
+1. Deploy [`shim/mill-oauth.html`](shim/mill-oauth.html) to a stable origin you
+   own, and set `MILL_CLIENT_ID` + `MILL_ALLOWED_ORIGINS` inside it.
+2. Google Cloud Console → create an **OAuth Client ID (Web application)**, add
+   the shim's origin under *Authorized JavaScript origins*, and enable the
+   **Drive API**.
+
+Why the shim exists: `drive.appdata` is scoped **per OAuth client**, so a
+per-host client id would give each app a *separate* folder for the same user and
+fragment their identity. One shared client id on one origin makes "log in with
+Google" mean the same Nostr identity everywhere. The shim holds no secret — a
+client id is public, and the registered origin is the security boundary. Because
+the data belongs to the *GCP project*, not the domain, you can move the shim to
+a new origin later and users keep their backups.
+
+`drive.appdata` is classified **non-sensitive**, so the consent screen needs no
+Google security review to publish.
+
+> **On the PIN, honestly:** a 4-digit PIN is ~13 bits of entropy. Measured
+> against the 600k-iteration KDF, the whole PIN space falls in ~1s at modest
+> parallelism *once an attacker already has the ciphertext*. The PIN stops
+> casual access; the real protection is the user's Google account and its 2FA.
+> The UI says as much rather than implying more. For at-rest security that does
+> not depend on the account, users export a passphrase-protected `ncryptsec`.
 
 ---
 

@@ -36,6 +36,9 @@ import { kindLabel, kindNip, kindArticle } from './kinds.js';
 import {
   DURATIONS, listGrants, saveGrant, revokeGrant, revokeAllGrants, sweepExpiredGrants,
 } from './grants.js';
+import { requestCloudToken } from './oauth.js';
+import { encryptCloudBlob, decryptCloudBlob, exportNcryptsec } from './cloudkey.js';
+import { listBackups, downloadBackup, uploadBackup, deleteBackup, withAuth } from './drive.js';
 
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
@@ -58,6 +61,9 @@ const RESTORE_METHOD_ALIASES = {
   encrypted_key:     'privatekey',
   newkey:            'privatekey',
   none:              'readonly',
+  // Google login builds a private-key signer from the cloud-recovered key;
+  // after a reload the sessionStorage blob restores it exactly like privatekey.
+  google:            'privatekey',
 };
 
 // These choose whether a category is PRE-APPROVED, not when a password is
@@ -78,6 +84,7 @@ const METHOD_META = {
   nip46:      { label: 'Remote Signer',     icon: '📡',  color: 'var(--mill-teal)'    },
   nip55:      { label: 'Android Signer',    icon: '📱',  color: 'var(--mill-teal)'    },
   newkey:     { label: 'New Identity',      icon: '✨',  color: 'var(--mill-success)' },
+  google:     { label: 'Google',            icon: '🔵',  color: 'var(--mill-accent)'  },
 };
 
 const METHODS_LIST = [
@@ -622,12 +629,14 @@ function keyDisplay(label, value, redact = false) {
   );
 }
 
-function field(label, placeholder, value, onChange, { mono = false, type = 'text', hint, error, rows } = {}) {
+function field(label, placeholder, value, onChange, { mono = false, type = 'text', hint, error, rows, inputmode, maxlength } = {}) {
   const wrap = h('div', { class: 'mill-field' });
   if (label) wrap.appendChild(h('label', { class: 'mill-label' }, label));
   const input = rows
     ? h('textarea', { class: `mill-textarea${mono ? ' mono' : ''}${error ? ' error' : ''}`, placeholder, rows: String(rows) })
     : h('input', { class: `mill-input${mono ? ' mono' : ''}${error ? ' error' : ''}`, placeholder, type });
+  if (inputmode) input.setAttribute('inputmode', inputmode);
+  if (maxlength) input.setAttribute('maxlength', String(maxlength));
   input.value = value;
   input.addEventListener('input', e => onChange(e.target.value));
   wrap.appendChild(input);
@@ -825,17 +834,24 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const signInList     = calloutEntry ? resolved.filter(m => m.id !== calloutId) : resolved;
 
   if (calloutEntry) {
+    // When Google login is configured, "I'm new here" opens a chooser
+    // (Continue with Google / Generate my own keys) instead of jumping
+    // straight to key generation. With no Google shim set, behaviour is
+    // unchanged — existing hosts see exactly the same screen as before.
+    const googleAvailable = !!host?.getAttribute?.('oauth-shim');
+    const calloutTarget = (calloutId === 'newkey' && googleAvailable) ? '_newhere' : calloutId;
     // Per-method callout copy. Default New-Identity copy if it's newkey.
     const calloutCopy = calloutId === 'newkey'
-      ? { headline: "I'm new here!", subline: 'Create a new Nostr identity in seconds — no email, no signup.' }
+      ? { headline: "I'm new here!", subline: googleAvailable
+          ? 'Get started in seconds. No email, no keys to manage.'
+          : 'Create a new Nostr identity in seconds — no email, no signup.' }
       : { headline: calloutEntry.label, subline: calloutEntry.sub || '' };
-    const newkeyEntry = calloutEntry;
     const callout = h('button', {
       class: 'mill-method-card',
-      onClick: () => onSelect(newkeyEntry.id),
+      onClick: () => onSelect(calloutTarget),
       style: { padding: '10px 14px', background: 'var(--mill-accent-dim)', borderColor: 'var(--mill-accent)', borderStyle: 'dashed', marginBottom: '14px' },
     });
-    callout.appendChild(h('div', { class: 'mill-method-icon', style: { width: '32px', height: '32px', fontSize: '17px' } }, newkeyEntry.icon));
+    callout.appendChild(h('div', { class: 'mill-method-icon', style: { width: '32px', height: '32px', fontSize: '17px' } }, calloutEntry.icon));
     const txt = h('div', { style: { flex: '1', minWidth: '0' } });
     txt.appendChild(h('div', { style: { fontSize: '13.5px', fontWeight: '600', color: 'var(--mill-accent)' } }, calloutCopy.headline));
     txt.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--mill-text-secondary)', marginTop: '2px', lineHeight: '1.4' } }, calloutCopy.subline));
@@ -1407,6 +1423,203 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
   return container;
 }
 
+// ── Flow: "I'm new here" chooser ──────────────────────────────────────────────
+// Only reached when Google login is configured. Two ways to start: the normie
+// path (Google, key hidden) and the self-custody path (generate, save your own
+// key). Framed so the easy choice is obvious but the sovereign one is right
+// there — matching the user's goal of easy-onboarding-now, take-control-later.
+function renderNewHereChooser(host, onSelect, onBack) {
+  const { wrap, body, footer } = flowWrap({
+    step: 0, total: 1,
+    title: 'Get Started',
+    subtitle: 'Create your Nostr account. You can move to full self-custody whenever you want.',
+    onBack,
+  });
+
+  const option = (icon, title, sub, primary, onClick) => {
+    const card = h('button', {
+      class: 'mill-method-card',
+      onClick,
+      style: { padding: '13px 15px', marginBottom: '10px',
+        ...(primary ? { background: 'var(--mill-accent-dim)', borderColor: 'var(--mill-accent)' } : {}) },
+    });
+    card.appendChild(h('div', { class: 'mill-method-icon', style: { width: '34px', height: '34px', fontSize: '18px' } }, icon));
+    const txt = h('div', { style: { flex: '1', minWidth: '0' } });
+    txt.appendChild(h('div', { style: { fontSize: '14px', fontWeight: '600', color: primary ? 'var(--mill-accent)' : 'var(--mill-text)' } }, title));
+    txt.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--mill-text-secondary)', marginTop: '2px', lineHeight: '1.45' } }, sub));
+    card.appendChild(txt);
+    card.appendChild(h('span', { class: 'mill-arrow', style: primary ? { color: 'var(--mill-accent)' } : {} }, '→'));
+    return card;
+  };
+
+  body.appendChild(option('🔵', 'Continue with Google',
+    'Easiest. Your key is created and safely stored for you — nothing to write down.',
+    true, () => onSelect('google')));
+  body.appendChild(option('🔑', 'Generate my own keys',
+    'Advanced. You get your private key immediately and are responsible for backing it up.',
+    false, () => onSelect('newkey')));
+
+  footer.appendChild(btn('Back', 'ghost', onBack));
+  return wrap;
+}
+
+// ── Flow: Continue with Google (cloud-backed key) ─────────────────────────────
+// The normie path. Mill generates and holds the key; the user sees a PIN, never
+// a key. Their nsec is encrypted and stored in their own Google Drive's hidden
+// app-data folder, so it survives across devices and browsers without the user
+// managing anything. "Take control of my keys" (the export screen) is where the
+// key becomes visible — hidden until asked for.
+function renderGoogleFlow(host, onDone, onBack) {
+  const shimUrl = host.getAttribute?.('oauth-shim') || '';
+  let step = shimUrl ? 'idle' : 'unconfigured';
+  let errMsg = '', pin = '', pin2 = '';
+  let token = null;               // { accessToken, ... }
+  let backups = [];              // Drive file list
+  const container = h('div', {});
+
+  // Drive ops need a token getter; a forced refresh re-opens the popup, since a
+  // GIS access token can't be refreshed silently from here.
+  const getToken = async (force) => {
+    if (token && !force) return token.accessToken;
+    token = await requestCloudToken(shimUrl);
+    return token.accessToken;
+  };
+
+  async function connect(render) {
+    step = 'connecting'; errMsg = ''; render();
+    try {
+      await getToken(false);
+      backups = await withAuth(getToken, t => listBackups(t));
+      step = backups.length ? 'unlock' : 'setup';
+      render();
+    } catch (e) {
+      errMsg = e.message || 'Could not connect to Google.';
+      step = 'idle'; render();
+    }
+  }
+
+  // Finish: encrypt the recovered/created key under the PIN for this session's
+  // sessionStorage (same mechanism the private-key flow uses), build the signer.
+  async function finish(privHex, npub, pubHex) {
+    const perms = defaultPerms();
+    const encrypted = await encryptNsec(privHex, pin);
+    storeEncryptedNsec(encrypted);
+    storeSignPerms(perms);
+    const signer = createPrivateKeySigner({
+      pubkey: pubHex, perms,
+      promptPassword: sessionPrompt(host, pin),
+      requestConsent: req => host.requestConsent({ ...req, npub }),
+    });
+    onDone({ method: 'google', pubkey: pubHex, perms, signer });
+  }
+
+  async function unlock(render) {
+    step = 'working'; errMsg = ''; render();
+    try {
+      // Try each backup with the PIN; the first that decrypts is the account.
+      // (Multi-account chooser is a later refinement — one identity is the norm.)
+      for (const f of backups) {
+        try {
+          const blob = await withAuth(getToken, t => downloadBackup(t, f.id));
+          const privHex = await decryptCloudBlob(blob, pin);
+          const pubHex = getPublicKey(hexToBytes(privHex));
+          await finish(privHex, hexToNpub(pubHex), pubHex);
+          return;
+        } catch { /* wrong PIN or unrelated file — try the next */ }
+      }
+      errMsg = 'That PIN did not unlock your account. Try again.';
+      step = 'unlock'; render();
+    } catch (e) {
+      errMsg = e.message || 'Something went wrong.';
+      step = 'unlock'; render();
+    }
+  }
+
+  async function createAndUpload(render) {
+    step = 'working'; errMsg = ''; render();
+    try {
+      const keys = await generateKeypair();
+      const blob = await encryptCloudBlob(keys.privHex, pin);
+      // Upload BEFORE trusting it locally — wisp's ordering, so a failed upload
+      // never leaves a key that exists only on this device.
+      await withAuth(getToken, t => uploadBackup(t, blob));
+      await finish(keys.privHex, keys.npub, keys.pubHex);
+    } catch (e) {
+      errMsg = e.message || 'Could not save your account to Google.';
+      step = 'setup'; render();
+    }
+  }
+
+  function pinField(label, val, onInput) {
+    // inputmode numeric + pattern so phones show a number pad; 4 digits like a
+    // phone passcode, per the product decision.
+    const { wrap } = field(label, '• • • •', val, onInput, { type: 'password', inputmode: 'numeric', maxlength: '4' });
+    return wrap;
+  }
+
+  function render() {
+    container.innerHTML = '';
+
+    if (step === 'unconfigured') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 1, title: 'Google Sign-In Unavailable', subtitle: 'This app has not set up Google sign-in.', onBack });
+      body.appendChild(badge('warning', '🔧', 'Not configured', 'The developer of this app needs to set an oauth-shim URL to enable “Continue with Google”. Use another sign-in method for now.'));
+      footer.appendChild(btn('Back', 'primary', onBack));
+      container.appendChild(wrap);
+
+    } else if (step === 'idle') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Create or restore your account. Your key is encrypted and stored in your own Google Drive — the app never sees it.', onBack });
+      body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you (or your existing one is restored). It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', onBack));
+      footer.appendChild(btn('Continue with Google', 'primary', () => connect(render)));
+      container.appendChild(wrap);
+
+    } else if (step === 'connecting') {
+      const { wrap, body } = flowWrap({ step: 1, total: 3, title: 'Connecting…', subtitle: 'Approve access in the Google window.' });
+      const center = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '30px 0' } });
+      center.appendChild(spinner()); center.appendChild(h('span', { style: { color: 'var(--mill-text-secondary)' } }, 'Waiting for Google…'));
+      body.appendChild(center);
+      container.appendChild(wrap);
+
+    } else if (step === 'working') {
+      const { wrap, body } = flowWrap({ step: 2, total: 3, title: 'Almost there…', subtitle: 'Securing your account.' });
+      const center = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '30px 0' } });
+      center.appendChild(spinner()); center.appendChild(h('span', { style: { color: 'var(--mill-text-secondary)' } }, 'One moment…'));
+      body.appendChild(center);
+      container.appendChild(wrap);
+
+    } else if (step === 'unlock') {
+      const okBtn = btn('Unlock', 'primary', () => { if (/^\d{4}$/.test(pin)) unlock(render); }, !/^\d{4}$/.test(pin));
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Enter your PIN', subtitle: 'Welcome back. Enter the PIN you set to unlock your account.', onBack: () => { step = 'idle'; pin = ''; render(); } });
+      const f = pinField('PIN', pin, v => { pin = v.replace(/\D/g, '').slice(0, 4); okBtn.disabled = !/^\d{4}$/.test(pin); });
+      body.appendChild(f);
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      const inp = f.querySelector('input'); if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && /^\d{4}$/.test(pin)) unlock(render); });
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; render(); }));
+      footer.appendChild(okBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'setup') {
+      const ok = () => /^\d{4}$/.test(pin) && pin === pin2;
+      const okBtn = btn('Create Account', 'primary', () => { if (ok()) createAndUpload(render); }, !ok());
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Choose a PIN', subtitle: 'Pick a 4-digit PIN. You will use it to unlock your account on other devices.', onBack: () => { step = 'idle'; pin = ''; pin2 = ''; render(); } });
+      const err = h('div', { class: 'mill-error' });
+      const sync = () => { okBtn.disabled = !ok(); err.textContent = (pin2 && pin !== pin2) ? 'PINs do not match' : ''; };
+      body.appendChild(pinField('PIN', pin, v => { pin = v.replace(/\D/g, '').slice(0, 4); sync(); }));
+      body.appendChild(pinField('Confirm PIN', pin2, v => { pin2 = v.replace(/\D/g, '').slice(0, 4); sync(); }));
+      body.appendChild(err);
+      // Honest about what the PIN does and does not do — no security theatre.
+      body.appendChild(badge('muted', 'ℹ️', 'About your PIN', 'The PIN stops someone casually opening your account. Your real protection is your Google account and its security — keep that locked down. If you forget the PIN, you can still recover using an exported key, if you saved one.'));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; pin2 = ''; render(); }));
+      footer.appendChild(okBtn);
+      container.appendChild(wrap);
+    }
+  }
+  render();
+  return container;
+}
+
 // ── Flow: New Keypair ─────────────────────────────────────────────────────────
 function renderNewKeypairFlow(host, onDone, onBack) {
   let step = 0, keys = null, checks = [false, false, false], pw = '', pw2 = '', generating = false;
@@ -1502,7 +1715,7 @@ function renderNewKeypairFlow(host, onDone, onBack) {
 }
 
 // ── Connected screen ──────────────────────────────────────────────────────────
-function renderConnectedScreen(result, onDisconnect) {
+function renderConnectedScreen(result, onDisconnect, opts = {}) {
   const m = METHOD_META[result.method] || {};
   const wrap = h('div', { class: 'mill-connected' });
   const avatar = h('div', { class: 'mill-connected-avatar' }, m.icon);
@@ -1519,8 +1732,84 @@ function renderConnectedScreen(result, onDisconnect) {
       h('code', { style: { fontSize: '12px', fontFamily: 'var(--mill-font-mono)', color: 'var(--mill-accent)', wordBreak: 'break-all', lineHeight: '1.6' } }, result.pubkey)
     ));
   }
+  // "Take control" — only when mill actually holds the key (private-key-backed
+  // methods). For NIP-07/46/55 the key lives elsewhere and there's nothing to
+  // reveal. Hidden behind a quiet link, per the decision that normies should
+  // never have to think about keys until they choose to.
+  if (opts.onShowKeys && loadEncryptedNsec()) {
+    wrap.appendChild(btn('Take control of my keys', 'ghost small', opts.onShowKeys));
+  }
   wrap.appendChild(btn('Disconnect & Switch Account', 'ghost small', onDisconnect));
   return wrap;
+}
+
+// ── Flow: key export ("take control of my keys") ──────────────────────────────
+// Reveals the private key mill has been holding, and exports a portable NIP-49
+// ncryptsec any other Nostr client can import. Requires re-entering the session
+// password / PIN first — seeing the key is exactly when re-authentication is
+// warranted, and it means a shoulder-surfer on an unlocked tab still can't.
+function renderKeyExport(host, result, onBack) {
+  let step = 'auth', pw = '', privHex = '', errMsg = '';
+  let pass = '', ncryptsec = '', exporting = false;
+  const container = h('div', {});
+  const isCloud = result?.method === 'google';
+
+  function render() {
+    container.innerHTML = '';
+
+    if (step === 'auth') {
+      const label = isCloud ? 'PIN' : 'Session password';
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Take Control of Your Keys', subtitle: `Enter your ${label.toLowerCase()} to reveal your private key.`, onBack });
+      body.appendChild(badge('warning', '🔑', 'Your private key is about to be shown', 'Anyone who sees it gains full control of your account. Make sure no one is watching your screen, and only save it somewhere private.'));
+      const f = field(label, isCloud ? '• • • •' : 'Your password', pw, v => { pw = v; errMsg = ''; },
+        { type: 'password', error: errMsg, inputmode: isCloud ? 'numeric' : undefined, maxlength: isCloud ? 4 : undefined });
+      body.appendChild(f.wrap);
+      const submit = async () => {
+        try {
+          const enc = loadEncryptedNsec();
+          privHex = await decryptNsec(enc, pw);
+          step = 'reveal'; render();
+        } catch { errMsg = isCloud ? 'Wrong PIN' : 'Wrong password'; render(); }
+      };
+      if (f.input) f.input.addEventListener('keydown', e => { if (e.key === 'Enter' && pw) submit(); });
+      footer.appendChild(btn('Cancel', 'ghost', onBack));
+      footer.appendChild(btn('Reveal', 'primary', submit));
+      container.appendChild(wrap);
+
+    } else {
+      const nsec = hexToNsec(privHex);
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 2, title: 'Your Keys', subtitle: 'This is your account. Save it somewhere only you control.', onBack: () => { step = 'auth'; pw = ''; privHex = ''; render(); } });
+      body.appendChild(keyDisplay('Private Key (nsec) — KEEP SECRET', nsec, true));
+      if (result?.pubkey) body.appendChild(keyDisplay('Public Key (npub) — safe to share', hexToNpub(result.pubkey)));
+
+      if (isCloud) {
+        body.appendChild(badge('info', '☁️', 'Your cloud backup still exists', 'A copy of this key is still encrypted in your Google Drive so you can keep signing in with Google. Saving your nsec here is an additional, portable copy — it does not remove the cloud one.'));
+      }
+
+      body.appendChild(h('div', { class: 'mill-divider' }));
+
+      // Portable export: NIP-49 ncryptsec, importable by any Nostr client.
+      body.appendChild(h('div', { style: { fontSize: '13px', fontWeight: '600', marginBottom: '2px' } }, 'Export an encrypted backup'));
+      body.appendChild(h('div', { class: 'mill-hint' }, 'Protect your key with a passphrase (min 8 characters). The result is a standard ncryptsec you can import into any Nostr app.'));
+      const pf = field('Backup passphrase', 'At least 8 characters', pass, v => { pass = v; }, { type: 'password' });
+      body.appendChild(pf.wrap);
+      if (ncryptsec) body.appendChild(keyDisplay('Encrypted Key (ncryptsec)', ncryptsec, true));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+
+      footer.appendChild(btn('Done', 'ghost', onBack));
+      footer.appendChild(btn(exporting ? 'Encrypting…' : 'Export ncryptsec', 'primary', async () => {
+        errMsg = '';
+        if (pass.length < 8) { errMsg = 'Use at least 8 characters'; render(); return; }
+        exporting = true; render();
+        try { ncryptsec = exportNcryptsec(privHex, pass); }
+        catch (e) { errMsg = e.message || 'Export failed'; }
+        exporting = false; render();
+      }, exporting));
+      container.appendChild(wrap);
+    }
+  }
+  render();
+  return container;
 }
 
 // ── Flow: Unlock (standalone password prompt for restore) ─────────────────────
@@ -1906,6 +2195,10 @@ class NostrSignerElement extends HTMLElement {
         () => finish(null),
         { title: this._state.unlock.title, subtitle: this._state.unlock.subtitle },
       ));
+    } else if (this._state.connected && this._state.keyexport) {
+      body.appendChild(renderKeyExport(this, this._state.connected, () => {
+        this._state.keyexport = false; this._render();
+      }));
     } else if (this._state.connected) {
       body.appendChild(renderConnectedScreen(this._state.connected, () => {
         try { this._state.connected?.signer?.disconnect?.(); } catch {}
@@ -1915,6 +2208,8 @@ class NostrSignerElement extends HTMLElement {
         this._state.connected = null; this._state.method = null;
         this._dispatch('mill:disconnected', {});
         this._render();
+      }, {
+        onShowKeys: () => { this._state.keyexport = true; this._render(); },
       }));
     } else if (this._state.method) {
       const flowMap = {
@@ -1924,6 +2219,8 @@ class NostrSignerElement extends HTMLElement {
         nip46:      () => renderNIP46Flow(this, onDone, onBack, { relays: this._state.relays }),
         nip55:      () => renderNIP55Flow(this, onDone, onBack),
         newkey:     () => renderNewKeypairFlow(this, onDone, onBack),
+        google:     () => renderGoogleFlow(this, onDone, onBack),
+        _newhere:   () => renderNewHereChooser(this, id => { this._state.method = id; this._render(); }, onBack),
       };
       const flowFn = flowMap[this._state.method];
       if (flowFn) body.appendChild(flowFn());
@@ -1975,6 +2272,7 @@ const MILL = {
     // (which read attributes off the host element) pick them up.
     if (opts.appName) el.setAttribute('app-name', opts.appName);
     if (opts.amberCallback) el.setAttribute('amber-callback', opts.amberCallback);
+    if (opts.oauthShim) el.setAttribute('oauth-shim', opts.oauthShim);
     el.open(opts);
     return el;
   },
