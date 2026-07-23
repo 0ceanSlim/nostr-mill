@@ -206,11 +206,13 @@ type SigningPerms = Record<string, 'session' | 'prompt'>;
 
 ## Continue with Google (cloud-backed key) — opt-in
 
-A "normie" onboarding path: mill generates and holds the key, the user sees only
-a 4-digit PIN, and their nsec is encrypted and stored in **their own** Google
-Drive (the hidden `appDataFolder`). Returning users sign in on any device with
-their PIN. "Take control of my keys" (on the connected screen) reveals the nsec
-and exports a portable NIP-49 `ncryptsec` whenever they choose.
+A "normie" onboarding path: mill generates and holds the key, the user sets a
+PIN (4–8 letters or numbers), and their nsec is encrypted and stored in **their
+own** Google Drive (the hidden `appDataFolder`). Returning users sign in on any
+device with their PIN. At setup a user can also **import an existing key**
+instead of generating one, to bring their own identity into cloud login.
+"Take control of my keys" (on the connected screen) reveals the nsec and exports
+a portable NIP-49 `ncryptsec` whenever they choose.
 
 This is **off unless you configure it**, and existing hosts see no change to the
 picker until they do. It needs a small amount of setup because Google binds

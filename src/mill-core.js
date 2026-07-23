@@ -1469,6 +1469,15 @@ function renderPrivateKeyFlow(host, onDone, onBack) {
   return container;
 }
 
+// Cloud-backup secret: 4–8 characters, letters and/or digits. A superset of
+// wisp's numeric-only PIN — a user can still type 4 digits, but may also use
+// letters for a bit more entropy. Kept short and low-friction on purpose; real
+// at-rest security is the cloud account, and the exported ncryptsec uses a full
+// passphrase. Deliberately not longer: this is a PIN, not a passphrase.
+const CLOUD_PIN_RE = /^[a-zA-Z0-9]{4,8}$/;
+const isValidPin = s => CLOUD_PIN_RE.test(s || '');
+const sanitizePin = s => (s || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+
 // ── Flow: "I'm new here" chooser ──────────────────────────────────────────────
 // Only reached when Google login is configured. Two ways to start: the normie
 // path (Google, key hidden) and the self-custody path (generate, save your own
@@ -1519,6 +1528,8 @@ function renderGoogleFlow(host, onDone, onBack) {
   const shimUrl = host.getAttribute?.('oauth-shim') || '';
   let step = shimUrl ? 'idle' : 'unconfigured';
   let errMsg = '', pin = '', pin2 = '';
+  let mode = 'generate';         // 'generate' | 'import' — bring-your-own-key
+  let nsecVal = '';              // pasted key when mode === 'import'
   let token = null;               // { accessToken, ... }
   let backups = [];              // Drive file list
   const container = h('div', {});
@@ -1581,15 +1592,24 @@ function renderGoogleFlow(host, onDone, onBack) {
     }
   }
 
-  async function createAndUpload(render) {
+  // Save a NEW cloud account — either a freshly generated key or one the user
+  // brought themselves (mode === 'import'). Upload BEFORE trusting it locally
+  // (wisp's ordering) so a failed upload never leaves a key only on this device.
+  async function saveNewKey(render) {
     step = 'working'; errMsg = ''; render();
     try {
-      const keys = await generateKeypair();
-      const blob = await encryptCloudBlob(keys.privHex, pin);
-      // Upload BEFORE trusting it locally — wisp's ordering, so a failed upload
-      // never leaves a key that exists only on this device.
+      let privHex, npub, pubHex;
+      if (mode === 'import') {
+        privHex = nsecToHex(nsecVal.trim());
+        pubHex  = getPublicKey(hexToBytes(privHex));
+        npub    = hexToNpub(pubHex);
+      } else {
+        const keys = await generateKeypair();
+        privHex = keys.privHex; npub = keys.npub; pubHex = keys.pubHex;
+      }
+      const blob = await encryptCloudBlob(privHex, pin);
       await withAuth(getToken, t => uploadBackup(t, blob));
-      await finish(keys.privHex, keys.npub, keys.pubHex);
+      await finish(privHex, npub, pubHex);
     } catch (e) {
       errMsg = e.message || 'Could not save your account to Google.';
       step = 'setup'; render();
@@ -1597,10 +1617,16 @@ function renderGoogleFlow(host, onDone, onBack) {
   }
 
   function pinField(label, val, onInput) {
-    // inputmode numeric + pattern so phones show a number pad; 4 digits like a
-    // phone passcode, per the product decision.
-    const { wrap } = field(label, '• • • •', val, onInput, { type: 'password', inputmode: 'numeric', maxlength: '4' });
-    return wrap;
+    // Allows letters as well as digits, so no forced numeric inputmode — a
+    // number-only pad would hide the letters the 4–8 alphanumeric PIN permits.
+    // Reflect the sanitised value back into the field so what's shown always
+    // equals what's stored (otherwise a typed symbol appears but is dropped).
+    const f = field(label, '4–8 letters or numbers', val, (v) => {
+      const clean = sanitizePin(v);
+      if (f.input && f.input.value !== clean) f.input.value = clean;
+      onInput(clean);
+    }, { type: 'password', maxlength: '8' });
+    return f.wrap;
   }
 
   function render() {
@@ -1614,7 +1640,7 @@ function renderGoogleFlow(host, onDone, onBack) {
 
     } else if (step === 'idle') {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Create or restore your account. Your key is encrypted and stored in your own Google Drive — the app never sees it.', onBack });
-      body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you (or your existing one is restored). It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
+      body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you — or your existing one is restored, or you can import your own. It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       footer.appendChild(btn('Back', 'ghost', onBack));
       footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => connect(render)));
@@ -1635,27 +1661,48 @@ function renderGoogleFlow(host, onDone, onBack) {
       container.appendChild(wrap);
 
     } else if (step === 'unlock') {
-      const okBtn = btn('Unlock', 'primary', () => { if (/^\d{4}$/.test(pin)) unlock(render); }, !/^\d{4}$/.test(pin));
+      const okBtn = btn('Unlock', 'primary', () => { if (isValidPin(pin)) unlock(render); }, !isValidPin(pin));
       const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Enter your PIN', subtitle: 'Welcome back. Enter the PIN you set to unlock your account.', onBack: () => { step = 'idle'; pin = ''; render(); } });
-      const f = pinField('PIN', pin, v => { pin = v.replace(/\D/g, '').slice(0, 4); okBtn.disabled = !/^\d{4}$/.test(pin); });
+      const f = pinField('PIN', pin, v => { pin = sanitizePin(v); okBtn.disabled = !isValidPin(pin); });
       body.appendChild(f);
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      const inp = f.querySelector('input'); if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && /^\d{4}$/.test(pin)) unlock(render); });
+      const inp = f.querySelector('input'); if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && isValidPin(pin)) unlock(render); });
       footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; render(); }));
       footer.appendChild(okBtn);
       container.appendChild(wrap);
 
     } else if (step === 'setup') {
-      const ok = () => /^\d{4}$/.test(pin) && pin === pin2;
-      const okBtn = btn('Create Account', 'primary', () => { if (ok()) createAndUpload(render); }, !ok());
-      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Choose a PIN', subtitle: 'Pick a 4-digit PIN. You will use it to unlock your account on other devices.', onBack: () => { step = 'idle'; pin = ''; pin2 = ''; render(); } });
+      const importing = mode === 'import';
+      const keyOk = () => !importing || isValidNsec(nsecVal.trim());
+      const ok    = () => isValidPin(pin) && pin === pin2 && keyOk();
+      const okBtn = btn(importing ? 'Import & Save' : 'Create Account', 'primary', () => { if (ok()) saveNewKey(render); }, !ok());
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: importing ? 'Import Your Key' : 'Choose a PIN', subtitle: importing ? 'Bring an existing Nostr key and protect it with a PIN.' : 'Pick a PIN (4–8 letters or numbers). You will use it to unlock your account on other devices.', onBack: () => { step = 'idle'; pin = ''; pin2 = ''; render(); } });
+
+      // Toggle: generate a fresh key, or bring your own.
+      const seg = h('div', { style: { display: 'flex', gap: '4px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px', padding: '4px', marginBottom: '4px' } });
+      const segBtn = (id, label) => {
+        const active = mode === id;
+        const b = h('button', { class: 'mill-btn', style: { flex: '1', padding: '8px', fontSize: '12.5px', background: active ? 'var(--mill-accent-dim)' : 'transparent', color: active ? 'var(--mill-accent)' : 'var(--mill-muted)', border: active ? '1px solid var(--mill-accent)' : '1px solid transparent' }, onClick: () => { mode = id; errMsg = ''; render(); } }, label);
+        return b;
+      };
+      seg.appendChild(segBtn('generate', 'Create new key'));
+      seg.appendChild(segBtn('import', 'Import my key'));
+      body.appendChild(seg);
+
       const err = h('div', { class: 'mill-error' });
       const sync = () => { okBtn.disabled = !ok(); err.textContent = (pin2 && pin !== pin2) ? 'PINs do not match' : ''; };
-      body.appendChild(pinField('PIN', pin, v => { pin = v.replace(/\D/g, '').slice(0, 4); sync(); }));
-      body.appendChild(pinField('Confirm PIN', pin2, v => { pin2 = v.replace(/\D/g, '').slice(0, 4); sync(); }));
+
+      if (importing) {
+        const { wrap: fw } = field('Private Key (nsec or hex)', 'nsec1… or 64-char hex', nsecVal, v => { nsecVal = v; errMsg = ''; sync(); }, { mono: true });
+        body.appendChild(fw);
+      }
+
+      body.appendChild(pinField('PIN', pin, v => { pin = sanitizePin(v); sync(); }));
+      body.appendChild(pinField('Confirm PIN', pin2, v => { pin2 = sanitizePin(v); sync(); }));
       body.appendChild(err);
       // Honest about what the PIN does and does not do — no security theatre.
       body.appendChild(badge('muted', 'ℹ️', 'About your PIN', 'The PIN stops someone casually opening your account. Your real protection is your Google account and its security — keep that locked down. If you forget the PIN, you can still recover using an exported key, if you saved one.'));
+      if (importing) body.appendChild(badge('info', '🔑', 'Bringing your own key', 'Your key is encrypted with your PIN and uploaded to your Google Drive. Keep your original nsec backed up too — the PIN only protects this cloud copy.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; pin2 = ''; render(); }));
       footer.appendChild(okBtn);
@@ -1807,8 +1854,8 @@ function renderKeyExport(host, result, onBack) {
       const label = isCloud ? 'PIN' : 'Session password';
       const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Take Control of Your Keys', subtitle: `Enter your ${label.toLowerCase()} to reveal your private key.`, onBack });
       body.appendChild(badge('warning', '🔑', 'Your private key is about to be shown', 'Anyone who sees it gains full control of your account. Make sure no one is watching your screen, and only save it somewhere private.'));
-      const f = field(label, isCloud ? '• • • •' : 'Your password', pw, v => { pw = v; errMsg = ''; },
-        { type: 'password', error: errMsg, inputmode: isCloud ? 'numeric' : undefined, maxlength: isCloud ? 4 : undefined });
+      const f = field(label, isCloud ? '4–8 letters or numbers' : 'Your password', pw, v => { pw = v; errMsg = ''; },
+        { type: 'password', error: errMsg, maxlength: isCloud ? 8 : undefined });
       body.appendChild(f.wrap);
       const submit = async () => {
         try {
