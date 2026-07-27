@@ -39,6 +39,11 @@ import {
 import { requestCloudToken } from './oauth.js';
 import { encryptCloudBlob, decryptCloudBlob, exportNcryptsec } from './cloudkey.js';
 import { listBackups, downloadBackup, uploadBackup, deleteBackup, withAuth } from './drive.js';
+import {
+  deriveBackupIdentity, generateRecoveryPhrase, passphraseOk,
+  encryptBackupPayload, decryptBackupPayload, buildBackupEvent, nextCounter,
+  publishBackup, fetchBackup,
+} from './nipbackup.js';
 
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
@@ -1526,13 +1531,26 @@ function renderNewHereChooser(host, onSelect, onBack) {
 // key becomes visible — hidden until asked for.
 function renderGoogleFlow(host, onDone, onBack) {
   const shimUrl = host.getAttribute?.('oauth-shim') || '';
+  // Cross-app recovery (the cloud-backup NIP) is opt-in: the host must point at
+  // relays that accept these backups (see the spec — generic relays reject
+  // graphless pubkeys). Empty → the feature is hidden entirely.
+  const backupRelays = (host.getAttribute?.('backup-relays') || '').split(',').map(s => s.trim()).filter(Boolean);
   let step = shimUrl ? 'idle' : 'unconfigured';
   let errMsg = '', pin = '', pin2 = '';
   let mode = 'generate';         // 'generate' | 'import' — bring-your-own-key
   let nsecVal = '';              // pasted key when mode === 'import'
-  let token = null;               // { accessToken, ... }
+  let token = null;               // { accessToken, sub, ... }
   let backups = [];              // Drive file list
+  let recovering = false;        // true when the entry point was "recover from another app"
+  let phrase = '';               // generated recovery phrase (enable path)
+  let phraseIn = '';             // pasted recovery phrase (recover path)
+  let pending = null;            // { privHex, npub, pubHex } awaiting the recovery offer
+  let phraseSaved = false;
   const container = h('div', {});
+
+  // cross-app recovery needs the account's stable `sub`; only available if the
+  // shim returned it (openid scope). If missing, we degrade gracefully.
+  const canRecover = () => backupRelays.length > 0 && !!token?.sub;
 
   // Drive ops need a token getter; a forced refresh re-opens the popup, since a
   // GIS access token can't be refreshed silently from here.
@@ -1546,12 +1564,50 @@ function renderGoogleFlow(host, onDone, onBack) {
     step = 'connecting'; errMsg = ''; render();
     try {
       await getToken(false);
+      if (recovering) {                       // "recover from another app" entry
+        if (!token?.sub) { errMsg = 'This sign-in did not return an account id. Update the OAuth page to request the openid scope.'; step = 'idle'; recovering = false; render(); return; }
+        step = 'recover-enter'; render(); return;
+      }
       backups = await withAuth(getToken, t => listBackups(t));
       step = backups.length ? 'unlock' : 'setup';
       render();
     } catch (e) {
       errMsg = e.message || 'Could not connect to Google.';
-      step = 'idle'; render();
+      step = 'idle'; recovering = false; render();
+    }
+  }
+
+  // ── Cross-app recovery (NIP) ────────────────────────────────────────────────
+  async function publishRecovery(render) {
+    step = 'working'; errMsg = ''; render();
+    try {
+      const { seckey } = deriveBackupIdentity('google', token.sub, phrase);
+      const payload = encryptBackupPayload(pending.privHex, phrase);
+      const ev = buildBackupEvent({ backupSeckey: seckey, payload, label: 'primary', n: 1, createdAt: Math.floor(Date.now() / 1000) });
+      const res = await publishBackup(backupRelays, ev);
+      if (!res.ok) { errMsg = 'Could not reach any backup relay. Your account still works — cross-app recovery was not enabled. You can retry later.'; step = 'show-recovery'; render(); return; }
+      await finish(pending.privHex, pending.npub, pending.pubHex);
+    } catch (e) {
+      errMsg = e.message || 'Could not enable cross-app recovery.';
+      step = 'show-recovery'; render();
+    }
+  }
+
+  async function doRecover(render) {
+    step = 'working'; errMsg = ''; render();
+    try {
+      const p = phraseIn.trim().replace(/\s+/g, ' ');
+      const { pubkey } = deriveBackupIdentity('google', token.sub, p);
+      const { event, reached, total } = await fetchBackup(backupRelays, { pubkey, label: 'primary' });
+      if (reached < Math.ceil(total / 2)) { errMsg = 'Could not reach the backup relays. Check your connection and try again.'; step = 'recover-enter'; render(); return; }
+      if (!event) { errMsg = 'No backup found for that recovery phrase. Check the words and spacing, then try again.'; step = 'recover-enter'; render(); return; }
+      const privHex = decryptBackupPayload(event.content, p);
+      const pubHex = getPublicKey(hexToBytes(privHex));
+      pin = p;                                // recovered session is unlocked by the phrase
+      await finish(privHex, hexToNpub(pubHex), pubHex);
+    } catch (e) {
+      errMsg = 'Could not recover with that phrase. Double-check the words.';
+      step = 'recover-enter'; render();
     }
   }
 
@@ -1609,7 +1665,10 @@ function renderGoogleFlow(host, onDone, onBack) {
       }
       const blob = await encryptCloudBlob(privHex, pin);
       await withAuth(getToken, t => uploadBackup(t, blob));
-      await finish(privHex, npub, pubHex);
+      // Offer cross-app recovery only if the host configured it and we have a
+      // sub; otherwise finish straight away.
+      if (canRecover()) { pending = { privHex, npub, pubHex }; step = 'offer-recovery'; render(); }
+      else { await finish(privHex, npub, pubHex); }
     } catch (e) {
       errMsg = e.message || 'Could not save your account to Google.';
       step = 'setup'; render();
@@ -1642,8 +1701,45 @@ function renderGoogleFlow(host, onDone, onBack) {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Create or restore your account. Your key is encrypted and stored in your own Google Drive — the app never sees it.', onBack });
       body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you — or your existing one is restored, or you can import your own. It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      // Entry point for a user whose key was backed up by another app.
+      if (backupRelays.length) {
+        body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
+          onClick: () => { recovering = true; connect(render); } }, 'Recover an account from another app'));
+      }
       footer.appendChild(btn('Back', 'ghost', onBack));
-      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => connect(render)));
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { recovering = false; connect(render); }));
+      container.appendChild(wrap);
+
+    } else if (step === 'offer-recovery') {
+      const { wrap, body, footer } = flowWrap({ step: 3, total: 3, title: 'Use this account in other apps?', subtitle: 'Optional. Create a recovery phrase so you can sign in to other Nostr apps with this same Google account.', onBack: () => finish(pending.privHex, pending.npub, pending.pubHex) });
+      body.appendChild(badge('info', '🔗', 'Cross-app recovery (experimental)', 'This publishes an encrypted copy of your key, protected by a recovery phrase, so other apps can restore it. It is separate from the Google-only login you just set up. You will need to write the phrase down.'));
+      body.appendChild(badge('warning', '⚠️', 'Experimental', 'This uses a draft standard that may change. Keep your own copy of your key regardless (see “Take control of my keys” after signing in).'));
+      footer.appendChild(btn('Skip', 'ghost', () => finish(pending.privHex, pending.npub, pending.pubHex)));
+      footer.appendChild(btn('Create recovery phrase', 'primary', () => { phrase = generateRecoveryPhrase(); phraseSaved = false; step = 'show-recovery'; render(); }));
+      container.appendChild(wrap);
+
+    } else if (step === 'show-recovery') {
+      const { wrap, body, footer } = flowWrap({ step: 3, total: 3, title: 'Your Recovery Phrase', subtitle: 'Write these words down in order and keep them private. You will need them (plus this Google account) to recover in another app.', onBack: () => { step = 'offer-recovery'; render(); } });
+      body.appendChild(keyDisplay('Recovery Phrase', phrase, true));
+      body.appendChild(badge('danger', '🔴', 'This is a password to your key', 'Anyone who has this phrase AND access to your Google account can take over your identity. Never share it or type it into an app you do not trust.'));
+      const chk = h('div', { class: `mill-check-item${phraseSaved ? ' checked' : ''}`, onClick: () => { phraseSaved = !phraseSaved; render(); } });
+      chk.appendChild(h('div', { class: 'mill-check-box' }, phraseSaved ? '✓' : ''));
+      chk.appendChild(h('span', { style: { fontSize: '13.5px', lineHeight: '1.55', color: 'var(--mill-text-secondary)' } }, 'I have written down my recovery phrase and stored it safely.'));
+      body.appendChild(chk);
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'offer-recovery'; render(); }));
+      footer.appendChild(btn('Enable & Continue', 'primary', () => publishRecovery(render), !phraseSaved));
+      container.appendChild(wrap);
+
+    } else if (step === 'recover-enter') {
+      const okp = () => passphraseOk(phraseIn.trim().replace(/\s+/g, ' '));
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Recover Your Account', subtitle: 'Enter the recovery phrase you saved when you first set up cross-app recovery.', onBack: () => { step = 'idle'; recovering = false; phraseIn = ''; render(); } });
+      const recBtn = btn('Recover', 'primary', () => doRecover(render), !okp());
+      const { wrap: fw } = field('Recovery Phrase', 'the words you wrote down', phraseIn, v => { phraseIn = v; errMsg = ''; recBtn.disabled = !okp(); }, { rows: 2, mono: true });
+      body.appendChild(fw);
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; recovering = false; phraseIn = ''; render(); }));
+      footer.appendChild(recBtn);
       container.appendChild(wrap);
 
     } else if (step === 'connecting') {
@@ -2366,6 +2462,7 @@ const MILL = {
     if (opts.appName) el.setAttribute('app-name', opts.appName);
     if (opts.amberCallback) el.setAttribute('amber-callback', opts.amberCallback);
     if (opts.oauthShim) el.setAttribute('oauth-shim', opts.oauthShim);
+    if (opts.backupRelays) el.setAttribute('backup-relays', Array.isArray(opts.backupRelays) ? opts.backupRelays.join(',') : opts.backupRelays);
     el.open(opts);
     return el;
   },

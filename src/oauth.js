@@ -65,7 +65,7 @@ export function requestCloudToken(shimUrl, { timeoutMs = 120_000 } = {}) {
       if (!d || d.source !== 'mill-oauth' || d.nonce !== nonce) return;
 
       if (d.ok && d.accessToken) {
-        finish(resolve, { accessToken: d.accessToken, expiresIn: d.expiresIn, scope: d.scope });
+        finish(resolve, { accessToken: d.accessToken, expiresIn: d.expiresIn, scope: d.scope, sub: d.sub || null });
       } else {
         finish(reject, new Error(oauthErrorMessage(d.error)));
       }

@@ -84,7 +84,10 @@
   ];
   // ───────────────────────────────────────────────────────────────────────────
 
-  var SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+  // drive.appdata for the Drive backup; openid to obtain the account's stable
+  // `sub` (needed to derive a cross-client backup address per the cloud-backup
+  // NIP). Both are non-sensitive scopes — no Google security review.
+  var SCOPE = 'openid https://www.googleapis.com/auth/drive.appdata';
   var statusEl = document.getElementById('status');
   var spinEl = document.getElementById('spin');
 
@@ -139,12 +142,22 @@
         prompt: '',
         callback: function (resp) {
           if (resp && resp.access_token) {
-            reply({
-              ok: true,
-              accessToken: resp.access_token,
-              expiresIn: resp.expires_in,
-              scope: resp.scope,
-            });
+            // Fetch the stable account id (`sub`) via userinfo. Best-effort: if
+            // it fails, still return the token so Drive login works; only the
+            // cross-client backup feature needs `sub`.
+            fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+              headers: { Authorization: 'Bearer ' + resp.access_token },
+            }).then(function (r) { return r.ok ? r.json() : {}; })
+              .catch(function () { return {}; })
+              .then(function (info) {
+                reply({
+                  ok: true,
+                  accessToken: resp.access_token,
+                  expiresIn: resp.expires_in,
+                  scope: resp.scope,
+                  sub: (info && info.sub) || null,
+                });
+              });
           } else {
             reply({ ok: false, error: (resp && resp.error) || 'no_token' });
           }

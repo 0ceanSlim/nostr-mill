@@ -25,7 +25,7 @@ Drop it into any web app with a `<script>` tag. Works with every Nostr signing m
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -222,6 +222,36 @@ OAuth to a registered origin — see [`shim/mill-oauth.html`](shim/mill-oauth.ht
 MILL.open({ oauthShim: 'https://auth.yourdomain.com/mill-oauth.html' });
 // or: <nostr-signer oauth-shim="https://auth.yourdomain.com/mill-oauth.html">
 ```
+
+### Cross-app recovery (experimental — draft NIP)
+
+Optionally, mill can publish an **interoperable** backup so a user can recover
+the *same* identity in **other** Nostr clients (not just other mill apps) with
+their Google account. This implements the draft
+[cloud-key-backup NIP](docs/nip-cloud-key-backup.md): an encrypted key, addressed
+by the account + a strong **recovery phrase**, stored on relays.
+
+It is **off unless you provide relays** — and it needs *dedicated* relays,
+because the backup is authored by a fresh keypair that ordinary relays reject
+(see the NIP). The shim must also request the `openid` scope (the updated
+`shim/mill-oauth.html` does this) so mill can read the account's stable `sub`.
+
+```js
+MILL.open({
+  oauthShim: 'https://auth.you.com/mill-oauth.html',
+  backupRelays: ['wss://backup.you.com'],   // dedicated relay(s) you run
+});
+```
+
+When set, the Google setup flow offers "Use this account in other apps?" →
+generates a 7-word recovery phrase (≥70 bits) the user saves, and publishes the
+backup. A returning user (in any implementing client) picks "Recover an account
+from another app", signs in with Google, and enters the phrase.
+
+> This is **experimental and low-assurance**: the encrypted key is public on
+> relays, protected only by the phrase; the draft may change; relay durability is
+> best-effort. Mill still forces the user to keep their own key ("Take control of
+> my keys"). Read the NIP's Security Considerations before enabling.
 
 Once `oauthShim` is set, **Google** appears as a first-class sign-in option
 (with the real Google logo) — both as a card in the picker and under
