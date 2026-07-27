@@ -16,7 +16,7 @@ export default [
     input,
     output: { file: 'dist/mill.esm.js', format: 'es', banner, sourcemap: true },
     plugins: [resolve(), commonjs()],
-    external: id => /^nostr-tools(\/|$)/.test(id),
+    external: id => /^(nostr-tools|@noble\/hashes|@scure\/bip39)(\/|$)/.test(id),
   },
 
   // CJS (Node / SSR; nostr-tools left external)
@@ -24,7 +24,7 @@ export default [
     input,
     output: { file: 'dist/mill.cjs.js', format: 'cjs', exports: 'named', banner, sourcemap: true },
     plugins: [resolve(), commonjs()],
-    external: id => /^nostr-tools(\/|$)/.test(id),
+    external: id => /^(nostr-tools|@noble\/hashes|@scure\/bip39)(\/|$)/.test(id),
   },
 
   // UMD unminified (CDN, debug-friendly; bundles nostr-tools)

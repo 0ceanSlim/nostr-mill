@@ -69,6 +69,8 @@
     "./dist/mill.umd.min.js"
   ],
   "dependencies": {
+    "@noble/hashes": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
     "qrcode-generator": "^2.0.4"
   }
 }
