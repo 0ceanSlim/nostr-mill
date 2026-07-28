@@ -1546,6 +1546,7 @@ function renderGoogleFlow(host, onDone, onBack) {
   let phraseIn = '';             // pasted recovery phrase (recover path)
   let pending = null;            // { privHex, npub, pubHex } awaiting the recovery offer
   let phraseSaved = false;
+  let confirmRemove = null;      // file id pending a remove confirmation (manage screen)
   const container = h('div', {});
 
   // cross-app recovery needs the account's stable `sub`; only available if the
@@ -1590,6 +1591,26 @@ function renderGoogleFlow(host, onDone, onBack) {
     } catch (e) {
       errMsg = e.message || 'Could not enable cross-app recovery.';
       step = 'show-recovery'; render();
+    }
+  }
+
+  async function refreshBackups() {
+    backups = await withAuth(getToken, t => listBackups(t));
+  }
+
+  // Delete one stored key's Drive blob. Does NOT touch any cross-app recovery
+  // event on relays — those are addressed by the phrase and can't be reached
+  // from here, and are irrevocable regardless (see the NIP).
+  async function removeBackup(fileId, render) {
+    step = 'working'; errMsg = ''; confirmRemove = null; render();
+    try {
+      await withAuth(getToken, t => deleteBackup(t, fileId));
+      await refreshBackups();
+      step = backups.length ? 'manage' : 'setup';
+      render();
+    } catch (e) {
+      errMsg = e.message || 'Could not remove that backup.';
+      step = 'manage'; render();
     }
   }
 
@@ -1763,8 +1784,42 @@ function renderGoogleFlow(host, onDone, onBack) {
       body.appendChild(f);
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       const inp = f.querySelector('input'); if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter' && isValidPin(pin)) unlock(render); });
+      // Escape hatches so a stored backup is never a dead end: add/import a
+      // different key, or manage (remove) what's stored.
+      body.appendChild(h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' } },
+        h('button', { class: 'mill-consent-manage', type: 'button', onClick: () => { mode = 'generate'; pin = ''; pin2 = ''; nsecVal = ''; errMsg = ''; step = 'setup'; render(); } }, 'Add or import a different account'),
+        h('button', { class: 'mill-consent-manage', type: 'button', onClick: () => { confirmRemove = null; errMsg = ''; step = 'manage'; render(); } }, `Manage stored keys${backups.length > 1 ? ` (${backups.length})` : ''}`),
+      ));
       footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; render(); }));
       footer.appendChild(okBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'manage') {
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Manage Cloud Keys', subtitle: 'Keys stored in your Google Drive for this account. Removing one deletes only the cloud copy and cannot be undone.', onBack: () => { confirmRemove = null; step = backups.length ? 'unlock' : 'idle'; render(); } });
+      if (!backups.length) {
+        body.appendChild(badge('muted', '🗂', 'Nothing stored', 'There are no cloud keys for this account. Create or import one to get started.'));
+      } else {
+        backups.forEach((fb, i) => {
+          const row = h('div', { class: 'mill-grant-row' });
+          let when = '';
+          try { if (fb.modifiedTime) when = new Date(fb.modifiedTime).toLocaleDateString(); } catch {}
+          row.appendChild(h('div', { class: 'mill-grant-left' },
+            h('div', { class: 'mill-grant-kind' }, `🔑 Stored key ${i + 1}`),
+            h('div', { class: 'mill-grant-meta' }, `${String(fb.id).slice(0, 8)}…${when ? ` · ${when}` : ''}`),
+          ));
+          const pending = confirmRemove === fb.id;
+          const rm = h('button', { class: 'mill-grant-btn', type: 'button',
+            onClick: () => { if (pending) removeBackup(fb.id, render); else { confirmRemove = fb.id; render(); } } },
+            pending ? 'Confirm remove' : 'Remove');
+          if (pending) { rm.style.borderColor = 'var(--mill-danger)'; rm.style.color = 'var(--mill-danger)'; rm.style.background = 'color-mix(in srgb, var(--mill-danger) 12%, transparent)'; }
+          row.appendChild(h('div', { class: 'mill-grant-actions' }, rm));
+          body.appendChild(row);
+        });
+        body.appendChild(h('div', { class: 'mill-hint' }, 'These are opaque on purpose — the key inside is only revealed by unlocking with its PIN. Keep an independent copy of any key you still want before removing it.'));
+      }
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { confirmRemove = null; step = backups.length ? 'unlock' : 'idle'; render(); }));
+      footer.appendChild(btn('Add / import a key', 'primary', () => { mode = 'generate'; pin = ''; pin2 = ''; nsecVal = ''; errMsg = ''; step = 'setup'; render(); }));
       container.appendChild(wrap);
 
     } else if (step === 'setup') {
@@ -1772,7 +1827,7 @@ function renderGoogleFlow(host, onDone, onBack) {
       const keyOk = () => !importing || isValidNsec(nsecVal.trim());
       const ok    = () => isValidPin(pin) && pin === pin2 && keyOk();
       const okBtn = btn(importing ? 'Import & Save' : 'Create Account', 'primary', () => { if (ok()) saveNewKey(render); }, !ok());
-      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: importing ? 'Import Your Key' : 'Choose a PIN', subtitle: importing ? 'Bring an existing Nostr key and protect it with a PIN.' : 'Pick a PIN (4–8 letters or numbers). You will use it to unlock your account on other devices.', onBack: () => { step = 'idle'; pin = ''; pin2 = ''; render(); } });
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: importing ? 'Import Your Key' : 'Choose a PIN', subtitle: importing ? 'Bring an existing Nostr key and protect it with a PIN.' : 'Pick a PIN (4–8 letters or numbers). You will use it to unlock your account on other devices.', onBack: () => { step = backups.length ? 'unlock' : 'idle'; pin = ''; pin2 = ''; nsecVal = ''; render(); } });
 
       // Toggle: generate a fresh key, or bring your own.
       const seg = h('div', { style: { display: 'flex', gap: '4px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px', padding: '4px', marginBottom: '4px' } });
@@ -1800,7 +1855,7 @@ function renderGoogleFlow(host, onDone, onBack) {
       body.appendChild(badge('muted', 'ℹ️', 'About your PIN', 'The PIN stops someone casually opening your account. Your real protection is your Google account and its security — keep that locked down. If you forget the PIN, you can still recover using an exported key, if you saved one.'));
       if (importing) body.appendChild(badge('info', '🔑', 'Bringing your own key', 'Your key is encrypted with your PIN and uploaded to your Google Drive. Keep your original nsec backed up too — the PIN only protects this cloud copy.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; pin = ''; pin2 = ''; render(); }));
+      footer.appendChild(btn('Back', 'ghost', () => { step = backups.length ? 'unlock' : 'idle'; pin = ''; pin2 = ''; nsecVal = ''; render(); }));
       footer.appendChild(okBtn);
       container.appendChild(wrap);
     }
