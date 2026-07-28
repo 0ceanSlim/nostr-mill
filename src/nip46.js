@@ -47,10 +47,16 @@ export function parseBunkerURI(uri) {
   };
 }
 
-export function buildNostrConnectURI({ clientPubkey, relays, secret, metadata }) {
+export function buildNostrConnectURI({ clientPubkey, relays, secret, metadata = {}, perms }) {
+  // Spec-compliant params (NIP-46): relay(s), secret, then optional name/url/
+  // image and perms as discrete query params. Older mill emitted a single
+  // `metadata=<json>` blob, which some signers (e.g. Amber) don't parse.
   const parts = relays.map(r => `relay=${encodeURIComponent(r)}`);
   parts.push(`secret=${secret}`);
-  if (metadata) parts.push(`metadata=${encodeURIComponent(JSON.stringify(metadata))}`);
+  if (perms) parts.push(`perms=${encodeURIComponent(perms)}`);
+  if (metadata.name) parts.push(`name=${encodeURIComponent(metadata.name)}`);
+  if (metadata.url) parts.push(`url=${encodeURIComponent(metadata.url)}`);
+  if (metadata.image) parts.push(`image=${encodeURIComponent(metadata.image)}`);
   return `nostrconnect://${clientPubkey}?${parts.join('&')}`;
 }
 
@@ -59,12 +65,15 @@ function randomHex(bytes = 16) {
 }
 
 export class NIP46Client {
-  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null } = {}) {
+  constructor({ relays = DEFAULT_RELAYS, metadata = {}, debug = false, onLog = null, onAuthChallenge = null, clientSecretKey = null } = {}) {
     this.relays = relays;
     this.metadata = metadata;
     this.debug = debug;
     this.onLog = onLog;                   // optional callback for surfacing logs in UI
-    this.clientSecretKey = generateSecretKey();
+    this.onAuthChallenge = onAuthChallenge; // optional: fired with the auth_url the signer asks the user to approve
+    // A provided key (Uint8Array) restores a prior client identity so the
+    // bunker recognizes us after a reload; otherwise generate a fresh one.
+    this.clientSecretKey = clientSecretKey || generateSecretKey();
     this.clientPubkey = getPublicKey(this.clientSecretKey);
     this.remotePubkey = null;
     this.userPubkey = null;
@@ -95,13 +104,36 @@ export class NIP46Client {
 
     this._openPool();
 
-    // Send connect request, then get_public_key
+    // Send connect request, then resolve the user pubkey.
     const connectArgs = parsed.secret ? [this.remotePubkey, parsed.secret] : [this.remotePubkey];
     await this._request('connect', connectArgs, { timeoutMs });
-    const pk = await this._request('get_public_key', [], { timeoutMs });
-    this.userPubkey = pk;
+    this.userPubkey = await this._resolveUserPubkey();
     this.connected = true;
-    return pk;
+    return this.userPubkey;
+  }
+
+  /**
+   * Resolve the user's identity pubkey after a connection is established.
+   * Prefers get_public_key (works for signers whose user key differs from the
+   * remote-signer key). When that goes unanswered — Amber answers signing but
+   * not get_public_key in both the bunker and nostrconnect flows — derive the
+   * pubkey from a signed probe event, whose author is the user's real key.
+   */
+  async _resolveUserPubkey({ timeoutMs = 15_000 } = {}) {
+    try {
+      return await this._request('get_public_key', [], { timeoutMs });
+    } catch (e) {
+      this._log('info', `get_public_key unanswered (${e.message}); deriving user pubkey from a signed probe`);
+      const probe = await this.signEvent({
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['challenge', 'mill-connect']],
+        content: '',
+      });
+      if (!probe || !probe.pubkey) throw new Error('Signer did not return a usable public key');
+      this._log('info', `Derived user pubkey ${probe.pubkey.slice(0, 8)}… from signed probe`);
+      return probe.pubkey;
+    }
   }
 
   /**
@@ -118,6 +150,9 @@ export class NIP46Client {
       relays: this.relays,
       secret,
       metadata: this.metadata,
+      // Pre-request the perms we actually use so the signer can authorize them
+      // up front instead of challenging on the first sign.
+      perms: 'sign_event,nip44_encrypt,nip44_decrypt,nip04_encrypt,nip04_decrypt',
     });
     onURI?.(uri);
 
@@ -130,10 +165,33 @@ export class NIP46Client {
     });
 
     this.remotePubkey = remotePubkey;
-    const pk = await this._request('get_public_key', [], { timeoutMs: 30_000 });
-    this.userPubkey = pk;
+    // The connect author is only the per-connection transport key — resolve
+    // the real user identity (get_public_key, or a signed-probe fallback).
+    this.userPubkey = await this._resolveUserPubkey();
     this.connected = true;
-    return pk;
+    return this.userPubkey;
+  }
+
+  /**
+   * Restore a previously-established session after a page reload. The bunker
+   * already authorized our client pubkey during the original pairing, so we
+   * only need to re-open the relay subscription — no new connect handshake.
+   * Construct the client with the persisted `clientSecretKey` first, then call
+   * this with the saved remote pubkey / relays / user pubkey.
+   *
+   * If the bunker has since forgotten the client, the first signEvent will
+   * time out and the caller should fall back to a fresh pairing.
+   */
+  async restore({ remotePubkey, relays, userPubkey } = {}) {
+    if (!remotePubkey) throw new Error('restore requires remotePubkey');
+    this.remotePubkey = remotePubkey;
+    if (Array.isArray(relays) && relays.length) this.relays = relays;
+    this.userPubkey = userPubkey || null;
+    this._closed = false;
+    this._openPool();
+    this.connected = true;
+    this._log('info', `Restored NIP-46 session for ${this.clientPubkey.slice(0, 8)}… → ${remotePubkey.slice(0, 8)}…`);
+    return this.userPubkey;
   }
 
   async getPublicKey() {
@@ -267,10 +325,27 @@ export class NIP46Client {
     // Response to one of our pending requests
     if (msg.id && this.pending.has(msg.id)) {
       const p = this.pending.get(msg.id);
+
+      // Auth challenge (NIP-46): the signer needs the user to approve. The URL
+      // lives in `error`, and the real response arrives LATER reusing the same
+      // id. Surface the URL and keep waiting — do NOT reject or drop the
+      // pending request. (Checked before the generic error branch because an
+      // auth_url response also carries a truthy `error`.)
+      if (msg.result === 'auth_url') {
+        const url = msg.error || '';
+        this._log('info', `Auth challenge — awaiting user approval: ${url}`);
+        clearTimeout(p.timer);
+        p.timer = setTimeout(() => {
+          this.pending.delete(msg.id);
+          p.reject(new Error('NIP-46 authorization timed out'));
+        }, 120_000);
+        try { this.onAuthChallenge?.(url); } catch (_) {}
+        return;
+      }
+
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
       if (msg.error) p.reject(new Error(msg.error));
-      else if (msg.result === 'auth_url') p.reject(new Error('NIP-46 auth_url required (open in browser): ' + msg.result));
       else p.resolve(msg.result);
     }
   }

@@ -10,7 +10,9 @@
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { nip04, nip44 } from 'nostr-tools';
 import { hexToBytes, hexToNpub, decryptNsec, loadEncryptedNsec, clearStoredNsec } from './crypto.js';
-import { buildAmberURL, openAmberIntent, awaitAmberResult } from './nip55.js';
+import { buildAmberURL, openAmberIntent, awaitAmberResult, awaitAmberClipboard, snapshotClipboard } from './nip55.js';
+import { kindLabel, categoryFor } from './kinds.js';
+import { grantFor, saveGrant } from './grants.js';
 
 // ── NIP-07 (browser extension) ────────────────────────────────────────────────
 export function createNIP07Signer(pubkey) {
@@ -59,10 +61,14 @@ export function createNIP46Signer(client, userPubkey) {
 // Each signEvent fires a fresh nostrsigner: intent and awaits the callback.
 export function createNIP55Signer({ pubkey, callbackUrl, appName }) {
   async function intentRoundtrip(type, eventJson, extra = {}) {
+    // No callbackUrl → Amber returns via the clipboard, which needs no host
+    // route. Snapshot first so stale clipboard content isn't misread.
+    const before = callbackUrl ? '' : await snapshotClipboard();
     const url = buildAmberURL({ type, callbackUrl, appName, pubkey, eventJson, ...extra });
     openAmberIntent(url);
-    const raw = await awaitAmberResult({ timeoutMs: 60_000 });
-    return raw;
+    return callbackUrl
+      ? await awaitAmberResult({ timeoutMs: 60_000 })
+      : await awaitAmberClipboard({ timeoutMs: 60_000, before });
   }
 
   return {
@@ -89,36 +95,69 @@ export function createNIP55Signer({ pubkey, callbackUrl, appName }) {
 
 // ── Private key (encrypted nsec, prompts for password per perms) ──────────────
 //
-// `perms` is { categoryId: 'ask'|'session'|'always' }.
+// `perms` is { categoryId: 'session'|'prompt' } — the coarse pre-approval
+// chosen at setup. 'session' auto-approves the category; 'prompt' shows the
+// consent card, where the user can then remember an answer per kind.
 // `promptPassword` is a function the host provides to ask the user for the
 // session password (returns Promise<string>). MILL's modal supplies one.
-export function createPrivateKeySigner({ pubkey, perms, promptPassword }) {
-  let cachedKey = null;        // Uint8Array(32) when unlocked for session
-  let cachedAt  = 0;
+// Two independent gates, deliberately not fused:
+//
+//   unlock  — "do we have the key?"      → password, once per session
+//   consent — "do you approve THIS event?" → per-kind grant, its own lifetime
+//
+// Amber works this way: its biometric gate wraps the app and is time-boxed,
+// and a remembered permission signs in a ContentProvider without launching an
+// Activity at all — so the biometric is skipped too. Fusing the two means
+// either a password per signature (which users disable immediately) or no
+// review at all.
+export function createPrivateKeySigner({ pubkey, perms, promptPassword, requestConsent }) {
+  let cachedKey = null;        // Uint8Array(32) once unlocked for this session
 
-  async function getPrivBytes(category) {
-    const policy = perms?.[category] ?? 'prompt';
-    // 'session' = cache after first unlock; 'prompt' = re-ask every time
-    if (policy === 'session' && cachedKey) return cachedKey;
-
+  // Gate 1: unlock. The key is encrypted at rest, so the first signature after
+  // a page load always costs a password — that's the cipher, not policy.
+  async function unlock() {
+    if (cachedKey) return cachedKey;
     const enc = loadEncryptedNsec();
     if (!enc) throw new Error('No stored nsec — login again');
-    const password = await promptPassword({ category, policy });
+    const password = await promptPassword({});
     if (!password) throw new Error('Password required');
     const hex = await decryptNsec(enc, password);
-    const bytes = hexToBytes(hex);
-    if (policy === 'session') { cachedKey = bytes; cachedAt = Date.now(); }
-    return bytes;
+    cachedKey = hexToBytes(hex);
+    return cachedKey;
   }
 
-  function categoryFor(event) {
-    const k = event.kind;
-    if (k === 1 || k === 6 || k === 7 || k === 16) return 'notes';
-    if (k === 0) return 'profile';
-    if (k === 3) return 'contacts';
-    if (k === 4 || k === 14 || k === 1059) return 'dms';
-    if (k === 9734) return 'zaps';
-    return 'other';
+  // Gate 2: consent. Resolution order — an explicit per-kind grant beats the
+  // coarse category policy chosen at setup, which beats asking.
+  async function authorize(event, type = 'sign_event') {
+    const kind  = event?.kind;
+    const grant = grantFor(kind);
+    if (grant === 'deny')  throw new Error(`Blocked by your permissions: ${kindLabel(event)}`);
+    if (grant === 'allow') return;
+
+    const category = categoryFor(event);
+    if ((perms?.[category] ?? 'prompt') === 'session') return;   // pre-approved at setup
+
+    // No consent handler (someone building a signer by hand) — fall back to
+    // the password gate rather than silently allowing.
+    if (!requestConsent) {
+      const password = await promptPassword({ category, policy: 'prompt' });
+      if (!password) throw new Error('Password required');
+      return;
+    }
+
+    const decision = await requestConsent({ event, kind, category, type, label: kindLabel(event) });
+    if (!decision?.approved) {
+      if (decision?.duration) saveGrant(kind, 'deny', decision.duration);
+      throw new Error(`Signing rejected: ${kindLabel(event)}`);
+    }
+    saveGrant(kind, 'allow', decision.duration || 'once');
+  }
+
+  // nip04/nip44 encrypt+decrypt are not sign_event; they map to the 'dms'
+  // category and carry no event to review.
+  async function dmKey(type) {
+    await authorize({ kind: 4, tags: [] }, type);
+    return unlock();
   }
 
   return {
@@ -128,16 +167,16 @@ export function createPrivateKeySigner({ pubkey, perms, promptPassword }) {
     canSign: true,
     getPublicKey: async () => pubkey,
     signEvent: async (event) => {
-      const priv = await getPrivBytes(categoryFor(event));
-      return finalizeEvent(event, priv);
+      await authorize(event);
+      return finalizeEvent(event, await unlock());
     },
     nip04: {
-      encrypt: async (pk, pt) => nip04.encrypt(await getPrivBytes('dms'), pk, pt),
-      decrypt: async (pk, ct) => nip04.decrypt(await getPrivBytes('dms'), pk, ct),
+      encrypt: async (pk, pt) => nip04.encrypt(await dmKey('nip04_encrypt'), pk, pt),
+      decrypt: async (pk, ct) => nip04.decrypt(await dmKey('nip04_decrypt'), pk, ct),
     },
     nip44: {
-      encrypt: async (pk, pt) => nip44.v2.encrypt(pt, nip44.v2.utils.getConversationKey(await getPrivBytes('dms'), pk)),
-      decrypt: async (pk, ct) => nip44.v2.decrypt(ct, nip44.v2.utils.getConversationKey(await getPrivBytes('dms'), pk)),
+      encrypt: async (pk, pt) => nip44.v2.encrypt(pt, nip44.v2.utils.getConversationKey(await dmKey('nip44_encrypt'), pk)),
+      decrypt: async (pk, ct) => nip44.v2.decrypt(ct, nip44.v2.utils.getConversationKey(await dmKey('nip44_decrypt'), pk)),
     },
     disconnect() {
       if (cachedKey) cachedKey.fill(0);
