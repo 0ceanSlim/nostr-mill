@@ -76,13 +76,22 @@
 (function () {
   'use strict';
 
-  // ── Configure these two ────────────────────────────────────────────────────
+  // ╔═══════════════════════════════════════════════════════════════════════╗
+  // ║  TEMPLATE — FILL THESE IN BEFORE DEPLOYING                              ║
+  // ║  This file does nothing until MILL_CLIENT_ID is set. See shim/README.md.║
+  // ╚═══════════════════════════════════════════════════════════════════════╝
+
+  // (1) Your Google OAuth 2.0 Web-application client ID. Public, not a secret.
+  //     Google Cloud Console → Credentials → OAuth client ID (Web application).
   var MILL_CLIENT_ID = 'REPLACE_ME.apps.googleusercontent.com';
-  // Origins permitted to open this shim. Empty array = allow any (not advised).
+
+  // (2) Origins allowed to open this popup — the sites that embed mill and call
+  //     MILL.open({ oauthShim: '…' }). Empty = allow ANY site (do not ship that).
   var MILL_ALLOWED_ORIGINS = [
-    // 'https://yourapp.com',
+    // 'https://oslim.dev',
   ];
-  // ───────────────────────────────────────────────────────────────────────────
+
+  // ── End of configuration ────────────────────────────────────────────────────
 
   // drive.appdata for the Drive backup; openid to obtain the account's stable
   // `sub` (needed to derive a cross-client backup address per the cloud-backup
