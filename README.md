@@ -1,7 +1,9 @@
 # MILL — Multi-Interface Login Layer
 
 **Zero-dependency Nostr signer UI as a Web Component.**  
-Drop it into any web app with a `<script>` tag. Works with every Nostr signing method.
+Drop it into any web app with a `<script>` tag. Every Nostr signing method — plus an
+optional **"Continue with Google"** onboarding path for non-technical users, who can
+take full control of their key whenever they choose.
 
 [![npm](https://img.shields.io/npm/v/nostr-mill)](https://www.npmjs.com/package/nostr-mill)
 [![license](https://img.shields.io/npm/l/nostr-mill)](LICENSE)
@@ -14,10 +16,22 @@ Drop it into any web app with a `<script>` tag. Works with every Nostr signing m
 |---|---|---|
 | Browser Extension | NIP-07 | Alby, nos2x, Flamingo, Nostore |
 | Remote Signer | NIP-46 | Bunker URL or QR scan |
-| Android Signer | NIP-55 | Amber (via Android intents) |
+| Android Signer | NIP-55 | Amber — clipboard return by default, no server needed |
 | Private Key | — | nsec/hex, AES-256 encrypted in sessionStorage |
 | Read Only | — | Public key / npub view-only access |
 | New Identity | — | Generate keypair in-browser |
+| **Google (cloud)** † | — | "Continue with Google": key generated/stored in the user's own Drive, unlocked by a PIN. Import or export the key anytime. |
+
+† **Opt-in and off by default** — it appears only when the host configures an
+OAuth shim (`oauthShim`), and existing hosts see no change to the picker until
+they do. See [Continue with Google](#continue-with-google-cloud-backed-key--opt-in).
+An experimental cross-client recovery layer is available on top — a draft
+[cloud-key-backup NIP](docs/nip-cloud-key-backup.md) with a
+[reference implementation](src/nipbackup.js).
+
+For private-key signing, MILL also acts as the signer and shows a **per-event
+consent card** (approve/reject with a remember-my-choice duration) — see
+[Signing consent](#signing-consent-private-key-only).
 
 ---
 
@@ -30,7 +44,7 @@ These are the only symbols and shapes covered by SemVer. Anything else in `src/`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
 - `deliverAmberCallback({ autoClose })`
-- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`
+- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`, `oauth-shim`, `backup-relays`
 - Events: `mill:connected`, `mill:disconnected`
 - The `MillResult` object (see "Return value" below)
 - The CSS variables listed under "Theming"
@@ -83,7 +97,7 @@ npm install nostr-tools
   // Open programmatically
   signer.open({
     onConnected: (result) => {
-      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey'
+      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google'
       console.log(result.pubkey);   // hex pubkey
     }
   });
@@ -189,9 +203,9 @@ MILL.open({ theme: brandTheme({ accent: '#7c3aed', radius: '6px' }) });
 
 ```ts
 type MillResult = {
-  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey';
+  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google';
   pubkey:    string;          // hex-encoded public key, always present
-  perms?:    SigningPerms;    // per-category pre-approval (privatekey / newkey only)
+  perms?:    SigningPerms;    // per-category pre-approval (privatekey / newkey / google)
   bunkerUrl?: string;         // NIP-46 only
   nsec?:     string;          // newkey flow only — the generated nsec (handle carefully)
 };
