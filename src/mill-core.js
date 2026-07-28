@@ -1547,6 +1547,7 @@ function renderGoogleFlow(host, onDone, onBack) {
   let pending = null;            // { privHex, npub, pubHex } awaiting the recovery offer
   let phraseSaved = false;
   let confirmRemove = null;      // file id pending a remove confirmation (manage screen)
+  let unlockMatches = [];        // accounts that decrypted with the entered PIN (chooser)
   const container = h('div', {});
 
   // cross-app recovery needs the account's stable `sub`; only available if the
@@ -1650,19 +1651,28 @@ function renderGoogleFlow(host, onDone, onBack) {
   async function unlock(render) {
     step = 'working'; errMsg = ''; render();
     try {
-      // Try each backup with the PIN; the first that decrypts is the account.
-      // (Multi-account chooser is a later refinement — one identity is the norm.)
+      // Collect every backup the entered PIN decrypts. Usually one; if the user
+      // gave several accounts the same PIN, more than one decrypts and we let
+      // them choose rather than silently picking the newest.
+      const matches = [];
       for (const f of backups) {
         try {
           const blob = await withAuth(getToken, t => downloadBackup(t, f.id));
           const privHex = await decryptCloudBlob(blob, pin);
           const pubHex = getPublicKey(hexToBytes(privHex));
-          await finish(privHex, hexToNpub(pubHex), pubHex);
-          return;
-        } catch { /* wrong PIN or unrelated file — try the next */ }
+          matches.push({ privHex, pubHex, npub: hexToNpub(pubHex) });
+        } catch { /* wrong PIN or unrelated file — skip */ }
       }
-      errMsg = 'That PIN did not unlock your account. Try again.';
-      step = 'unlock'; render();
+      if (!matches.length) {
+        errMsg = 'That PIN did not unlock any account. Try again.';
+        step = 'unlock'; render(); return;
+      }
+      if (matches.length === 1) {
+        const m = matches[0];
+        await finish(m.privHex, m.npub, m.pubHex);
+        return;
+      }
+      unlockMatches = matches; step = 'choose-account'; render();
     } catch (e) {
       errMsg = e.message || 'Something went wrong.';
       step = 'unlock'; render();
@@ -1820,6 +1830,21 @@ function renderGoogleFlow(host, onDone, onBack) {
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       footer.appendChild(btn('Back', 'ghost', () => { confirmRemove = null; step = backups.length ? 'unlock' : 'idle'; render(); }));
       footer.appendChild(btn('Add / import a key', 'primary', () => { mode = 'generate'; pin = ''; pin2 = ''; nsecVal = ''; errMsg = ''; step = 'setup'; render(); }));
+      container.appendChild(wrap);
+
+    } else if (step === 'choose-account') {
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Choose an Account', subtitle: 'More than one account uses that PIN. Pick which one to sign in as.', onBack: () => { step = 'unlock'; pin = ''; unlockMatches = []; render(); } });
+      unlockMatches.forEach((m, i) => {
+        const card = h('button', { class: 'mill-method-card', onClick: () => finish(m.privHex, m.npub, m.pubHex) });
+        card.appendChild(h('div', { class: 'mill-method-icon', style: { width: '34px', height: '34px', fontSize: '16px' } }, '🔑'));
+        card.appendChild(h('div', { style: { flex: '1', minWidth: '0' } },
+          h('div', { style: { fontSize: '13px', fontWeight: '600' } }, `Account ${i + 1}`),
+          h('code', { style: { fontSize: '10.5px', fontFamily: 'var(--mill-font-mono)', color: 'var(--mill-accent)', wordBreak: 'break-all', display: 'block', marginTop: '2px', lineHeight: '1.4' } }, m.npub),
+        ));
+        card.appendChild(h('span', { class: 'mill-arrow' }, '→'));
+        body.appendChild(card);
+      });
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'unlock'; pin = ''; unlockMatches = []; render(); }));
       container.appendChild(wrap);
 
     } else if (step === 'setup') {
