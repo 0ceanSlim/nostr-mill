@@ -1204,7 +1204,7 @@ function renderNIP46Flow(host, onDone, onBack, opts = {}) {
     return new NIP46Client({
       relays,
       metadata: { name: appName, url: location.origin },
-      debug: true,                 // always console.log — it's a debug-friendly default for v0.1.x betas
+      debug: false,                // quiet by default; onLog still feeds the in-modal diagnostic panel
       onLog,
       // The signer asked the user to approve at a URL. Surface it (and open it
       // for web bunkers); the connect/get_public_key promise keeps waiting and
