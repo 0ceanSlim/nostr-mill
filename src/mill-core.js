@@ -560,6 +560,38 @@ const BASE_CSS = `
     .mill-perm-summary { flex-direction: column; align-items: stretch; gap: 10px; }
     .mill-perm-toggle { width: 100%; padding: 8px 12px; }
   }
+
+  /* ─ Configurable modal footer ─ */
+  .mill-modal-footer {
+    margin-top: 18px; padding-top: 12px;
+    border-top: 1px solid var(--mill-border);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .mill-foot-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .mill-foot-text {
+    font-size: 11.5px; color: var(--mill-muted); line-height: 1.5;
+  }
+  .mill-foot-links { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .mill-foot-sep { color: var(--mill-border-light); font-size: 11px; }
+  .mill-foot-link {
+    font-size: 11.5px; font-weight: 600; color: var(--mill-accent);
+    text-decoration: none;
+  }
+  .mill-foot-link:hover { text-decoration: underline; }
+  .mill-foot-attr {
+    display: inline-flex; align-items: center; gap: 6px; align-self: center;
+    font-size: 10.5px; color: var(--mill-muted); text-decoration: none;
+    transition: color 0.15s;
+  }
+  .mill-foot-attr:hover { color: var(--mill-text-secondary); }
+  .mill-foot-attr-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--mill-accent); box-shadow: 0 0 6px var(--mill-accent);
+    display: inline-block; flex-shrink: 0;
+  }
 `;
 
 // ── HTML builder helpers ──────────────────────────────────────────────────────
@@ -844,15 +876,22 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const calloutId    = opts.callout === undefined ? 'newkey' : opts.callout;
   const wrap = h('div', {});
 
+  // Header, with optional app branding. header = { logo?, title?, heading?, subtitle? }
+  //   logo    — image URL (rendered as <img>) or short text/emoji for the mark
+  //   title   — brand eyebrow (default "Nostr Signer")
+  //   heading — main title  (default "Connect Your Account")
+  //   subtitle— description  (default the security-tradeoffs line)
+  const hd = opts.header || {};
   const hdr = h('div', { style: { marginBottom: '22px' } });
+  const mark = brandMark(hd.logo);
   const logo = h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' } },
-    h('div', { style: { width: '32px', height: '32px', borderRadius: '8px', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' } }, '⚡'),
-    h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, 'Nostr Signer')
+    mark,
+    h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, hd.title || 'Nostr Signer')
   );
   hdr.appendChild(logo);
-  hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700', marginBottom: '5px' } }, 'Connect Your Account'));
+  hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700', marginBottom: '5px' } }, hd.heading || 'Connect Your Account'));
   hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55' } },
-    'Choose how to access this Nostr client. Each method has different security tradeoffs.'
+    hd.subtitle || 'Choose how to access this Nostr client. Each method has different security tradeoffs.'
   ));
   wrap.appendChild(hdr);
 
@@ -969,7 +1008,69 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   tip.innerHTML = 'Not sure? <span style="color:var(--mill-accent);cursor:pointer">NIP-07 browser extension</span> is recommended.';
   wrap.appendChild(tip);
 
+  const foot = renderFooter(opts.footer);
+  if (foot) wrap.appendChild(foot);
+
   return wrap;
+}
+
+// The brand mark in the header. `logo` may be an image URL (http(s):// or
+// data:) → rendered as an <img>; a short emoji/text → shown in the tile; or
+// absent → the default ⚡. Always a 32px tile so branding stays consistent.
+function brandMark(logo) {
+  const tile = h('div', { style: { width: '32px', height: '32px', borderRadius: '8px', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', overflow: 'hidden', flexShrink: '0' } });
+  if (typeof logo === 'string' && /^(https?:\/\/|\/|data:image\/)/.test(logo)) {
+    const img = h('img', { src: logo, alt: '', style: { width: '100%', height: '100%', objectFit: 'contain' } });
+    img.addEventListener('error', () => { img.remove(); tile.textContent = '⚡'; });   // graceful fallback
+    tile.appendChild(img);
+  } else {
+    tile.textContent = (typeof logo === 'string' && logo.trim()) ? logo.trim() : '⚡';
+  }
+  return tile;
+}
+
+// Where mill's "Signer by MILL" attribution points by default. A host can
+// override it (footer.attributionHref) or turn it off (footer.attribution:false).
+const DEFAULT_MILL_URL = 'https://github.com/0ceanslim/nostr-mill';
+
+// Configurable modal footer shown under the method picker. Two independent
+// parts, both optional:
+//   - the host's own line: a tagline + links (Terms / Privacy / …)
+//   - a small "Signer by MILL" attribution, ON by default, toggleable
+// footer = { text?, links?: [{label, href}], attribution?: boolean, attributionHref? }
+function renderFooter(footer = {}) {
+  const links = Array.isArray(footer.links) ? footer.links.filter(l => l && l.label && l.href) : [];
+  const hasHostRow = !!footer.text || links.length > 0;
+  const showAttr = footer.attribution !== false;   // default on
+  if (!hasHostRow && !showAttr) return null;
+
+  const bar = h('div', { class: 'mill-modal-footer' });
+
+  if (hasHostRow) {
+    const row = h('div', { class: 'mill-foot-row' });
+    if (footer.text) row.appendChild(h('span', { class: 'mill-foot-text' }, footer.text));
+    if (links.length) {
+      const lw = h('div', { class: 'mill-foot-links' });
+      links.forEach((l, i) => {
+        if (i) lw.appendChild(h('span', { class: 'mill-foot-sep' }, '·'));
+        lw.appendChild(h('a', { class: 'mill-foot-link', href: l.href, target: '_blank', rel: 'noopener noreferrer' }, l.label));
+      });
+      row.appendChild(lw);
+    }
+    bar.appendChild(row);
+  }
+
+  if (showAttr) {
+    const a = h('a', {
+      class: 'mill-foot-attr',
+      href: footer.attributionHref || DEFAULT_MILL_URL,
+      target: '_blank', rel: 'noopener noreferrer',
+      title: 'Add Nostr login to your own app with MILL',
+    }, h('span', { class: 'mill-foot-attr-dot' }), h('span', {}, 'Signer by MILL'));
+    bar.appendChild(a);
+  }
+
+  return bar;
 }
 
 // ── Flow: Read Only ───────────────────────────────────────────────────────────
@@ -2335,6 +2436,8 @@ class NostrSignerElement extends HTMLElement {
     this._state.layout       = opts.layout;             // undefined → list
     this._state.callout      = 'callout' in opts ? opts.callout : undefined;  // undefined → 'newkey'
     this._state.relays       = Array.isArray(opts.relays) && opts.relays.length ? opts.relays : undefined;
+    this._state.footer       = opts.footer;             // { text?, links?, attribution?, attributionHref? }
+    this._state.header       = opts.header;             // { logo?, title?, heading?, subtitle? }
     this._state.open      = true;
     this._state.method    = null;
     this._state.connected = null;
@@ -2501,6 +2604,8 @@ class NostrSignerElement extends HTMLElement {
         density:      this._state.density,
         layout:       this._state.layout,
         callout:      this._state.callout,
+        footer:       this._state.footer,
+        header:       this._state.header,
       }));
     }
 

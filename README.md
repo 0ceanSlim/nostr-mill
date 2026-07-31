@@ -39,7 +39,7 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `header`, `footer`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -128,6 +128,59 @@ MILL.open({
   onClose: () => console.log('modal closed'),
 });
 ```
+
+---
+
+## Header & footer branding
+
+Brand the modal with your own header and footer.
+
+```js
+MILL.open({
+  header: {
+    logo: 'https://yourapp.com/logo.svg',   // image URL, or an emoji/short text; falls back to ⚡
+    title: 'YourApp',                        // eyebrow label (default "Nostr Signer")
+    heading: 'Welcome back',                 // main title  (default "Connect Your Account")
+    subtitle: 'Sign in to continue.',        // description line
+  },
+  footer: {
+    text: 'Your identity · Your data · Your money',
+    links: [
+      { label: 'Terms',   href: 'https://yourapp.com/terms' },
+      { label: 'Privacy', href: 'https://yourapp.com/privacy' },
+    ],
+    attribution: true,                        // "Signer by MILL" link — ON by default
+    attributionHref: 'https://…',             // optional: override where it points
+  },
+});
+```
+
+Every header field is optional and falls back to mill's default. A broken logo
+URL degrades to the ⚡ mark rather than a broken image.
+
+## Footer (Terms / Privacy / attribution)
+
+The method picker can show a configurable footer — your own tagline and links
+(Terms, Privacy, …), plus a small **"Signer by MILL"** attribution.
+
+```js
+MILL.open({
+  footer: {
+    text: 'Your identity · Your data · Your money',   // optional left tagline
+    links: [                                          // optional links (open in a new tab)
+      { label: 'Terms',   href: 'https://yourapp.com/terms' },
+      { label: 'Privacy', href: 'https://yourapp.com/privacy' },
+    ],
+    attribution: true,                    // "Signer by MILL" link — ON by default
+    attributionHref: 'https://…',         // optional: override where it points
+  },
+});
+```
+
+- The attribution is **on by default**; set `attribution: false` to hide it.
+- Omit `footer` entirely and you still get just the attribution. Pass
+  `{ attribution: false }` with no links/text for no footer at all.
+- Links open with `target="_blank" rel="noopener noreferrer"`.
 
 ---
 
