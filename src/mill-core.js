@@ -876,24 +876,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const calloutId    = opts.callout === undefined ? 'newkey' : opts.callout;
   const wrap = h('div', {});
 
-  // Header, with optional app branding. header = { logo?, title?, heading?, subtitle? }
-  //   logo    — image URL (rendered as <img>) or short text/emoji for the mark
-  //   title   — brand eyebrow (default "Nostr Signer")
-  //   heading — main title  (default "Connect Your Account")
-  //   subtitle— description  (default the security-tradeoffs line)
-  const hd = opts.header || {};
-  const hdr = h('div', { style: { marginBottom: '22px' } });
-  const mark = brandMark(hd.logo);
-  const logo = h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' } },
-    mark,
-    h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, hd.title || 'Nostr Signer')
-  );
-  hdr.appendChild(logo);
-  hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700', marginBottom: '5px' } }, hd.heading || 'Connect Your Account'));
-  hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55' } },
-    hd.subtitle || 'Choose how to access this Nostr client. Each method has different security tradeoffs.'
-  ));
-  wrap.appendChild(hdr);
+  wrap.appendChild(renderBrandHeader(opts.header));
 
   // methodFilter accepts:
   //   undefined / [] → show all defaults (newkey appears as a separated callout above sign-in methods)
@@ -1004,9 +987,14 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   });
   wrap.appendChild(list);
 
-  const tip = h('p', { style: { marginTop: '16px', fontSize: '11.5px', color: 'var(--mill-muted)', textAlign: 'center', lineHeight: '1.6' } });
-  tip.innerHTML = 'Not sure? <span style="color:var(--mill-accent);cursor:pointer">NIP-07 browser extension</span> is recommended.';
-  wrap.appendChild(tip);
+  // Picker tip. `opts.tip === false` hides it; a string overrides it; undefined
+  // shows the default recommendation.
+  if (opts.tip !== false) {
+    const tip = h('p', { style: { marginTop: '16px', fontSize: '11.5px', color: 'var(--mill-muted)', textAlign: 'center', lineHeight: '1.6' } });
+    if (typeof opts.tip === 'string') tip.textContent = opts.tip;
+    else tip.innerHTML = 'Not sure? <span style="color:var(--mill-accent);cursor:pointer">NIP-07 browser extension</span> is recommended.';
+    wrap.appendChild(tip);
+  }
 
   const foot = renderFooter(opts.footer);
   if (foot) wrap.appendChild(foot);
@@ -1014,19 +1002,57 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   return wrap;
 }
 
-// The brand mark in the header. `logo` may be an image URL (http(s):// or
-// data:) → rendered as an <img>; a short emoji/text → shown in the tile; or
-// absent → the default ⚡. Always a 32px tile so branding stays consistent.
-function brandMark(logo) {
-  const tile = h('div', { style: { width: '32px', height: '32px', borderRadius: '8px', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', overflow: 'hidden', flexShrink: '0' } });
-  if (typeof logo === 'string' && /^(https?:\/\/|\/|data:image\/)/.test(logo)) {
-    const img = h('img', { src: logo, alt: '', style: { width: '100%', height: '100%', objectFit: 'contain' } });
-    img.addEventListener('error', () => { img.remove(); tile.textContent = '⚡'; });   // graceful fallback
-    tile.appendChild(img);
-  } else {
-    tile.textContent = (typeof logo === 'string' && logo.trim()) ? logo.trim() : '⚡';
+const isImageUrl = s => typeof s === 'string' && /^(https?:\/\/|\/|data:image\/)/.test(s.trim());
+
+// The picker header / brand block.
+//
+// header = { logo?, logoHeight?, title?, message?, align?, label? }
+//   logo       — image URL (PNG/SVG/…) rendered at its natural size, or a short
+//                emoji/text. A broken image URL is dropped silently.
+//   logoHeight — px height for image logos (default 44).
+//   title      — main title.
+//   message    — a short line under the title.
+//   align      — 'left' (default) | 'center'.
+//
+// With no branding fields set, mill shows its own default header. As soon as any
+// of logo/title/message is provided, the block is fully the host's — no mill
+// wording leaks in. (`label` styles the modal's top strip, handled elsewhere.)
+function renderBrandHeader(header) {
+  const hd = header || {};
+  const custom = hd.logo || hd.title || hd.message;
+  const align = hd.align === 'center' ? 'center' : 'left';
+  const hdr = h('div', { style: {
+    marginBottom: '22px', display: 'flex', flexDirection: 'column', gap: '10px',
+    alignItems: align === 'center' ? 'center' : 'flex-start', textAlign: align,
+  } });
+
+  if (!custom) {
+    // Default mill header: small mark tile + eyebrow, heading, description.
+    const tile = h('div', { style: { width: '32px', height: '32px', borderRadius: '8px', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' } }, '⚡');
+    hdr.style.gap = '6px';
+    hdr.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+      tile,
+      h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, 'Nostr Signer'),
+    ));
+    hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700' } }, 'Connect Your Account'));
+    hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55' } },
+      'Choose how to access this Nostr client. Each method has different security tradeoffs.'));
+    return hdr;
   }
-  return tile;
+
+  // Custom brand block.
+  if (hd.logo) {
+    if (isImageUrl(hd.logo)) {
+      const img = h('img', { src: hd.logo.trim(), alt: hd.title || '', style: { height: `${hd.logoHeight || 44}px`, maxWidth: '100%', objectFit: 'contain', display: 'block' } });
+      img.addEventListener('error', () => img.remove());   // no broken-image icon
+      hdr.appendChild(img);
+    } else {
+      hdr.appendChild(h('div', { style: { fontSize: '36px', lineHeight: '1' } }, String(hd.logo).trim()));
+    }
+  }
+  if (hd.title)   hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700' } }, hd.title));
+  if (hd.message) hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55', maxWidth: '340px' } }, hd.message));
+  return hdr;
 }
 
 // Where mill's "Signer by MILL" attribution points by default. A host can
@@ -2437,7 +2463,8 @@ class NostrSignerElement extends HTMLElement {
     this._state.callout      = 'callout' in opts ? opts.callout : undefined;  // undefined → 'newkey'
     this._state.relays       = Array.isArray(opts.relays) && opts.relays.length ? opts.relays : undefined;
     this._state.footer       = opts.footer;             // { text?, links?, attribution?, attributionHref? }
-    this._state.header       = opts.header;             // { logo?, title?, heading?, subtitle? }
+    this._state.header       = opts.header;             // { logo?, logoHeight?, title?, message?, align?, label? }
+    this._state.tip          = 'tip' in opts ? opts.tip : undefined;   // string | false | undefined
     this._state.open      = true;
     this._state.method    = null;
     this._state.connected = null;
@@ -2507,12 +2534,17 @@ class NostrSignerElement extends HTMLElement {
     const overlay = h('div', { class: 'mill-overlay', onClick: e => { if (e.target === overlay) this.close(); } });
     const modal = h('div', { class: 'mill-modal' });
 
-    // Header
+    // Header strip: dot + label + close. `header.label` overrides the label;
+    // '' or false hides the dot+label (the close button always stays).
+    const labelCfg = this._state.header?.label;
+    const labelText = labelCfg === undefined ? 'Account Access' : labelCfg;
+    const headerLeft = h('div', { style: { display: 'flex', alignItems: 'center' } });
+    if (labelText) {
+      headerLeft.appendChild(h('span', { class: 'mill-header-dot' }));
+      headerLeft.appendChild(h('span', { class: 'mill-header-label' }, labelText));
+    }
     const header = h('div', { class: 'mill-header' },
-      h('div', { style: { display: 'flex', alignItems: 'center' } },
-        h('span', { class: 'mill-header-dot' }),
-        h('span', { class: 'mill-header-label' }, 'Account Access')
-      ),
+      headerLeft,
       h('button', { class: 'mill-close', onClick: () => this.close() }, '✕')
     );
     modal.appendChild(header);
@@ -2606,6 +2638,7 @@ class NostrSignerElement extends HTMLElement {
         callout:      this._state.callout,
         footer:       this._state.footer,
         header:       this._state.header,
+        tip:          this._state.tip,
       }));
     }
 

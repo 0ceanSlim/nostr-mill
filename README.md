@@ -39,7 +39,7 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `header`, `footer`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -138,11 +138,14 @@ Brand the modal with your own header and footer.
 ```js
 MILL.open({
   header: {
-    logo: 'https://yourapp.com/logo.svg',   // image URL, or an emoji/short text; falls back to ⚡
-    title: 'YourApp',                        // eyebrow label (default "Nostr Signer")
-    heading: 'Welcome back',                 // main title  (default "Connect Your Account")
-    subtitle: 'Sign in to continue.',        // description line
+    logo: 'https://yourapp.com/logo.png',   // image URL (PNG/SVG/…) at natural size, or an emoji/short text
+    logoHeight: 48,                          // px height for image logos (default 44)
+    title: 'YourApp',                        // main title
+    message: 'Your keys, your Nostr.',       // short line under the title
+    align: 'center',                         // 'left' (default) | 'center'
+    label: 'Secure Login',                   // the top strip eyebrow (default "Account Access"); '' hides it
   },
+  tip: false,                                 // hide the "Not sure? …" line under the methods (or pass a string)
   footer: {
     text: 'Your identity · Your data · Your money',
     links: [
@@ -155,8 +158,11 @@ MILL.open({
 });
 ```
 
-Every header field is optional and falls back to mill's default. A broken logo
-URL degrades to the ⚡ mark rather than a broken image.
+Every field is optional. As soon as you set any of `logo` / `title` / `message`,
+the header becomes fully yours — no mill wording appears. Leave `header` unset and
+you get mill's default header. A broken image URL is dropped silently (no
+broken-image icon). `label: ''` hides the top strip label (the close button
+stays); `tip: false` hides the recommendation line, or pass a string to replace it.
 
 ## Footer (Terms / Privacy / attribution)
 
