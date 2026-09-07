@@ -71,6 +71,8 @@
     "./dist/mill.umd.min.js"
   ],
   "dependencies": {
+    "@jsr/fiatjaf__promenade-trusted-dealer": "^0.4.3",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
     "qrcode-generator": "^2.0.4"
