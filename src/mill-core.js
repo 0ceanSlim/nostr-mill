@@ -47,6 +47,12 @@ import {
   massageURL as pomMassageURL,
 } from './pomegranate.js';
 
+// njump ecosystem defaults, used when a host enables pomegranate without naming
+// its own servers (MILL.open({ pomegranate: true })). Mirrors fiatjaf's admin
+// client: central auth.njump.me, four independently-run operators (3-of-4).
+const POM_DEFAULT_CENTRAL = 'auth.njump.me';
+const POM_DEFAULT_OPERATORS = ['po.f7z.io', 'po.coracle.social', 'po.njump.me', 'po.jumble.social'];
+
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
   { id: 'notes',    label: 'Text Notes & Reactions', desc: 'kind 1, 6, 7, 16', icon: '📝', def: 'session' },
@@ -894,10 +900,11 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   // list still shows it if asked (clicking without a shim shows a clear
   // "not configured" screen rather than failing silently).
   // Two Google paths, each opt-in via config: pomegranate (FROST, cross-client)
-  // when a central+operators are configured, and Drive+PIN (per-app) when an
-  // oauth-shim is set. Pomegranate takes precedence so there's never a double
-  // "Continue with Google". A "Google" affordance is available if either is set.
-  const pomegranateAvailable = !!(host?._state?.pomegranate?.central);
+  // when `pomegranate` is set — `true`/`{}` uses the njump ecosystem defaults, or
+  // pass { central, operators, threshold } to self-host — and Drive+PIN (per-app)
+  // when an oauth-shim is set. Pomegranate takes precedence so there's never a
+  // double "Continue with Google". A "Google" affordance is available if either.
+  const pomegranateAvailable = !!(host?._state?.pomegranate);
   const drivePinAvailable    = !!host?.getAttribute?.('oauth-shim');
   const googleAvailable      = pomegranateAvailable || drivePinAvailable;
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
@@ -1654,7 +1661,7 @@ function renderNewHereChooser(host, onSelect, onBack) {
   };
 
   // Route to whichever Google path the host configured (pomegranate wins).
-  const googleMethod = host?._state?.pomegranate?.central ? 'pomegranate' : 'google';
+  const googleMethod = host?._state?.pomegranate ? 'pomegranate' : 'google';
   body.appendChild(option(googleLogo, 'Continue with Google',
     'Easiest. Your key is created and safely stored for you — nothing to write down.',
     true, () => onSelect(googleMethod)));
@@ -1945,14 +1952,18 @@ function renderGoogleFlow(host, onDone, onBack) {
 // The cross-client Google path (fiatjaf's pomegranate). The key is FROST-sharded
 // across operators and never stored whole; Google authenticates the user to
 // those operators; signing runs over NIP-46 through a `central` coordinator.
-// Config (MILL.open({ pomegranate: { central, operators, threshold, relays } }))
-// lives on host._state.pomegranate. EXPERIMENTAL — needs a running central+ops.
+// Config: MILL.open({ pomegranate: true }) uses the njump ecosystem defaults
+// below; MILL.open({ pomegranate: { central, operators, threshold, relays,
+// pinCentral } }) self-hosts. Lives on host._state.pomegranate. EXPERIMENTAL.
 function renderPomegranateFlow(host, onDone, onBack) {
-  const cfg = host._state?.pomegranate || {};
-  const central = cfg.central ? pomMassageURL(cfg.central) : '';
-  const operators = (cfg.operators || []).map(pomMassageURL);
-  const threshold = cfg.threshold || Math.max(1, Math.ceil((operators.length * 2) / 3)); // default ~2/3
+  const raw = host._state?.pomegranate;
+  const cfg = (raw && typeof raw === 'object') ? raw : {};
+  const central = pomMassageURL(cfg.central || POM_DEFAULT_CENTRAL);
+  const operators = (cfg.operators?.length ? cfg.operators : POM_DEFAULT_OPERATORS).map(pomMassageURL);
+  // Match the reference client's default: ~7/12 of n, min 2, capped at n (4 → 3-of-4).
+  const threshold = cfg.threshold || Math.min(operators.length, Math.max(2, Math.ceil((operators.length * 7) / 12)));
   const relays = cfg.relays;
+  const pinCentral = !!cfg.pinCentral;   // skip cross-central discovery; always use `central`
 
   let step = central && operators.length ? 'idle' : 'unconfigured';
   let errMsg = '', statusMsg = '', createdNsec = '', nsecSaved = false;
@@ -2019,8 +2030,9 @@ function renderPomegranateFlow(host, onDone, onBack) {
       let activeCentral = central;
       let token = await pomAuthenticate(activeCentral);
       const email = pomTokenEmail(token);
-      // Cross-client discovery: has this Google account set up elsewhere?
-      const found = await pomDiscover(email, relays);
+      // Cross-client discovery: has this Google account set up elsewhere? Skipped
+      // when pinned, so a self-hosted central is never redirected to another.
+      const found = pinCentral ? null : await pomDiscover(email, relays);
       if (found && found.centralURL !== activeCentral) {
         activeCentral = found.centralURL;
         token = await pomAuthenticate(activeCentral);   // re-auth at the discovered central
