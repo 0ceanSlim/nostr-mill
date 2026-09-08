@@ -104,18 +104,22 @@ Do this **before** tearing down the old central, so a fresh njump announcement
 supersedes the stale `central.oslim.dev` one on the relays.
 
 1. With the demo pointed at njump (Part 3 config, or temporarily `pomegranate:
-   true`), sign in with Google.
-2. If you want your old key as the keeper: **Use a different key with this Google
-   account → Import my key** (paste the nsec from the safety step). This replaces
-   the njump account's key and **publishes a new `kind:16440`** for your email
-   pointing at `auth.njump.me` — newer than the old oslim announcement, so
-   discovery now resolves njump. If you're keeping the existing njump key instead,
-   do one replace/relogin anyway so a *fresh* njump announcement exists (otherwise
-   an older njump announcement could lose the newest-wins race to the stale oslim
-   one).
+   true`), open **Use a different key with this Google account** and sign in.
+   Because your only announcements point at the (soon-dead) `central.oslim.dev`,
+   mill shows the **"Account Found Elsewhere"** interstitial (beta.4+).
+2. Choose **Import here (`auth.njump.me`)**, then **Import my key** and paste the
+   nsec from the safety step. This creates/updates the account at `auth.njump.me`
+   and **publishes a new `kind:16440`** pointing there — newer than the stale
+   oslim announcement, so discovery now resolves njump. (Importing is what
+   publishes a fresh announcement; a plain re-login can't — the client never holds
+   the key — and a *same-key* replace is blocked by the guard, so "just relog in"
+   does not fix discovery. Import, or replace with a different key.)
 3. (Optional, best-effort) publish a NIP-09 deletion for the old
    `central.oslim.dev` `16440` events. Relays may or may not honor it; the newer
    njump announcement is what actually fixes discovery.
+4. **During the migration** you can set `pinCentral: true` on the demo so mill
+   ignores the stale oslim pointer and goes straight to `auth.njump.me` (no
+   interstitial). Remove it once a fresh njump announcement exists.
 
 ---
 

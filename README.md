@@ -394,6 +394,14 @@ is the least-surprising choice.
 > find that account and will treat the email as new — a silent way to end up with
 > two keys.
 
+> **When discovery points at a different central,** mill doesn't silently follow
+> it (and never auto-opens a second popup). It shows an **"Account Found
+> Elsewhere"** screen: on sign-in, one button to *continue there* (uses the
+> identity you already have); on "Use a different key", the choice to *replace the
+> key there* or *import here* at the configured central — importing publishes a
+> fresh announcement that supersedes the old pointer, which is how a migration
+> self-heals. `pinCentral: true` skips this entirely and always uses your central.
+
 ---
 
 ## Continue with Google (Drive + PIN) — per-app, no external servers
