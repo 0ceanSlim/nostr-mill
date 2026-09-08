@@ -1,9 +1,14 @@
 # MILL — Multi-Interface Login Layer
 
-**Zero-dependency Nostr signer UI as a Web Component.**  
-Drop it into any web app with a `<script>` tag. Every Nostr signing method — plus an
-optional **"Continue with Google"** onboarding path for non-technical users, who can
-take full control of their key whenever they choose.
+**Lightweight, drop-in Nostr signer UI as a Web Component.**  
+One `<script>` tag, every Nostr signing method — plus an optional
+**"Continue with Google"** onboarding path for non-technical users, who can take
+full control of their key whenever they choose.
+
+> Core signing methods carry no runtime dependencies of note. The opt-in Google
+> paths pull in crypto libraries (`@noble/*`, `@scure/bip39`, and — for
+> pomegranate — `@fiatjaf/promenade-trusted-dealer`); these ship in the bundle
+> but only run when a user actually uses those paths.
 
 [![npm](https://img.shields.io/npm/v/nostr-mill)](https://www.npmjs.com/package/nostr-mill)
 [![license](https://img.shields.io/npm/l/nostr-mill)](LICENSE)
@@ -20,14 +25,13 @@ take full control of their key whenever they choose.
 | Private Key | — | nsec/hex, AES-256 encrypted in sessionStorage |
 | Read Only | — | Public key / npub view-only access |
 | New Identity | — | Generate keypair in-browser |
-| **Google (cloud)** † | — | "Continue with Google": key generated/stored in the user's own Drive, unlocked by a PIN. Import or export the key anytime. |
+| **Google — Pomegranate** † | — | "Continue with Google", **cross-client**: FROST-sharded key, never stored whole. Client of fiatjaf's pomegranate. |
+| **Google — Drive+PIN** † | — | "Continue with Google", per-app: encrypted key in the user's own Drive, unlocked by a PIN. Import/export anytime. |
 
-† **Opt-in and off by default** — it appears only when the host configures an
-OAuth shim (`oauthShim`), and existing hosts see no change to the picker until
-they do. See [Continue with Google](#continue-with-google-cloud-backed-key--opt-in).
-An experimental cross-client recovery layer is available on top — a draft
-[cloud-key-backup NIP](docs/nip-cloud-key-backup.md) with a
-[reference implementation](src/nipbackup.js).
+† Both are **opt-in and off by default** — each appears only when configured
+(`pomegranate` for the FROST path, `oauthShim` for Drive+PIN); pomegranate takes
+precedence if both are set. Existing hosts see no change to the picker until they
+opt in. See [Continue with Google](#continue-with-google-pomegranate--frost--experimental-cross-client).
 
 For private-key signing, MILL also acts as the signer and shows a **per-event
 consent card** (approve/reject with a remember-my-choice duration) — see
@@ -39,12 +43,12 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `header`, `footer`, `tip`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
 - `deliverAmberCallback({ autoClose })`
-- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`, `oauth-shim`, `backup-relays`
+- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`, `oauth-shim`
 - Events: `mill:connected`, `mill:disconnected`
 - The `MillResult` object (see "Return value" below)
 - The CSS variables listed under "Theming"
@@ -97,7 +101,7 @@ npm install nostr-tools
   // Open programmatically
   signer.open({
     onConnected: (result) => {
-      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google'
+      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google' | 'pomegranate'
       console.log(result.pubkey);   // hex pubkey
     }
   });
@@ -262,7 +266,7 @@ MILL.open({ theme: brandTheme({ accent: '#7c3aed', radius: '6px' }) });
 
 ```ts
 type MillResult = {
-  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google';
+  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google' | 'pomegranate';
   pubkey:    string;          // hex-encoded public key, always present
   perms?:    SigningPerms;    // per-category pre-approval (privatekey / newkey / google)
   bunkerUrl?: string;         // NIP-46 only
@@ -277,56 +281,67 @@ type SigningPerms = Record<string, 'session' | 'prompt'>;
 
 ---
 
-## Continue with Google (cloud-backed key) — opt-in
+## Continue with Google (Pomegranate / FROST) — experimental, cross-client
 
-A "normie" onboarding path: mill generates and holds the key, the user sets a
-PIN (4–8 letters or numbers), and their nsec is encrypted and stored in **their
-own** Google Drive (the hidden `appDataFolder`). Returning users sign in on any
-device with their PIN. At setup a user can also **import an existing key**
-instead of generating one, to bring their own identity into cloud login.
-"Take control of my keys" (on the connected screen) reveals the nsec and exports
-a portable NIP-49 `ncryptsec` whenever they choose.
-
-This is **off unless you configure it**, and existing hosts see no change to the
-picker until they do. It needs a small amount of setup because Google binds
-OAuth to a registered origin — see [`shim/mill-oauth.html`](shim/mill-oauth.html).
-
-```js
-MILL.open({ oauthShim: 'https://auth.yourdomain.com/mill-oauth.html' });
-// or: <nostr-signer oauth-shim="https://auth.yourdomain.com/mill-oauth.html">
-```
-
-### Cross-app recovery (experimental — draft NIP)
-
-Optionally, mill can publish an **interoperable** backup so a user can recover
-the *same* identity in **other** Nostr clients (not just other mill apps) with
-their Google account. This implements the draft
-[cloud-key-backup NIP](docs/nip-cloud-key-backup.md): an encrypted key, addressed
-by the account + a strong **recovery phrase**, stored on relays.
-
-It is **off unless you provide relays** — and it needs *dedicated* relays,
-because the backup is authored by a fresh keypair that ordinary relays reject
-(see the NIP). The shim must also request the `openid` scope (the updated
-`shim/mill-oauth.html` does this) so mill can read the account's stable `sub`.
+The **cross-client** Google path: a user signs in with Google in *any*
+implementing client and gets the *same* Nostr identity. This is a client of
+fiatjaf's [pomegranate](https://fiatjaf.com/pomegranate) — the key is
+**FROST-sharded** across independent operator servers and never stored whole (no
+app, including mill, ever holds it); Google only authenticates the user to the
+operators; signing runs over NIP-46 through a `central` coordinator. To any
+client it is a normal NIP-46 bunker.
 
 ```js
 MILL.open({
-  oauthShim: 'https://auth.you.com/mill-oauth.html',
-  backupRelays: ['wss://backup.you.com'],   // dedicated relay(s) you run
+  pomegranate: {
+    central:   'https://central.yourdomain.com',        // pomegranate central server
+    operators: ['https://op1…', 'https://op2…', 'https://op3…'],
+    threshold: 2,                                         // m-of-n (default ~2/3 of n)
+    relays:    ['wss://relay.damus.io', /* … */],         // discovery relays (optional)
+  },
 });
 ```
 
-When set, the Google setup flow offers "Use this account in other apps?" →
-generates a 7-word recovery phrase (≥70 bits) the user saves, and publishes the
-backup. A returning user (in any implementing client) picks "Recover an account
-from another app", signs in with Google, and enters the phrase.
+- **Opt-in**, off unless configured. When set it takes precedence over the
+  Drive+PIN path so there's never a double "Continue with Google".
+- It needs a running **`central` + `operator` servers** you (or someone) host —
+  see the [handoff/deploy guide](docs/pomegranate-deploy.md). The central is the
+  Google OAuth handler, so mill needs no shim for this path.
+- Signup FROST-shards a new key and offers the nsec once for optional backup;
+  returning users are discovered by Google account across clients; "Recover my
+  key from operators" reconstructs the key from a threshold of shards.
 
-> This is **experimental and low-assurance**: the encrypted key is public on
-> relays, protected only by the phrase; the draft may change; relay durability is
-> best-effort. Mill still forces the user to keep their own key ("Take control of
-> my keys"). Read the NIP's Security Considerations before enabling.
+> **Experimental:** pomegranate is new and has no NIP yet — kinds/endpoints are
+> provisional and may change. It adds a FROST dependency
+> (`@fiatjaf/promenade-trusted-dealer`). Trust model: any *threshold* of
+> colluding operators, or a malicious Google OAuth, could reconstruct the key;
+> availability needs a threshold of operators online.
 
-Once `oauthShim` is set, **Google** appears as a first-class sign-in option
+> **Superseded:** 1.6's experimental relay-published cross-client backup (the
+> [cloud-key-backup NIP draft](docs/nip-cloud-key-backup.md)) is removed in 1.7
+> in favour of this — it avoided pomegranate's public-honeypot problem is the
+> reason. The NIP draft is kept for the record.
+
+---
+
+## Continue with Google (Drive + PIN) — per-app, no external servers
+
+A simpler path with **no servers to run**: mill generates and holds the key, the
+user sets a PIN (4–8 letters or numbers), and their nsec is encrypted into
+**their own** Google Drive (the hidden `appDataFolder`). It is **per-app** —
+Drive's app-data folder is scoped per OAuth client, so this is *not* cross-client
+(use pomegranate for that). Returning users sign in with their PIN; at setup they
+can **import an existing key**; "Take control of my keys" reveals the nsec and
+exports a portable NIP-49 `ncryptsec`.
+
+It needs a small static OAuth shim on an origin you own —
+see [`shim/mill-oauth.html`](shim/mill-oauth.html).
+
+```js
+MILL.open({ oauthShim: 'https://auth.yourdomain.com/mill-oauth.html' });
+```
+
+When either Google path is configured, **Google** appears as a first-class sign-in option
 (with the real Google logo) — both as a card in the picker and under
 "I'm new here", so new *and* returning users can reach it. It also slots into an
 explicit `methods` list like any other method, in whatever order you want:

@@ -1,6 +1,15 @@
 # NIP-XX (draft): Cloud-Account Key Backup
 
-`draft` `optional`
+> **⚠️ Superseded / historical (as of mill 1.7).** Mill shipped a reference
+> implementation of this draft in 1.6.0 and **removed it in 1.7** in favour of
+> fiatjaf's [pomegranate](https://fiatjaf.com/pomegranate) (FROST threshold
+> signing). The reason is the core weakness documented below: this scheme
+> publishes a permanent, public, offline-crackable corpus of encrypted keys,
+> which pomegranate avoids entirely by never storing a full key. This document
+> is kept as a record of the experiment and its adversarial review; it is **not**
+> a recommended design. See the README's "Continue with Google (Pomegranate)".
+
+`draft` `optional` `superseded`
 
 A **low-assurance convenience** mechanism for cross-client backup and recovery of
 a Nostr secret key, anchored to a third-party cloud account (e.g. "Sign in with
