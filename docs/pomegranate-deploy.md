@@ -157,6 +157,17 @@ central/operators publish there too, or discovery won't line up across clients.
    valid signature.
 5. **Recover** — "Recover my key from operators" → Google at each operator →
    after the threshold, mill reconstructs and shows the nsec.
+6. **Replace the key** — on the "Continue with Google" screen, "Use a different
+   key with this Google account" → Google → *Replace Your Key* shows the current
+   npub. Optionally back it up, then **Import my key** (or Create new key), tick
+   the confirm box, and **Replace key** → one erase popup per operator ("Yes,
+   erase forever") → Continue. Watch operator logs for `po-erase` then a fresh
+   `po-register`, and central for `DELETE /account` → `POST /register` →
+   `account created`. `GET /account` should then return the **new** pubkey, and
+   signing works as it. If you Cancel an erase, that operator's row flips back to
+   "still holds your old share" (a `403` on re-register) — erase it and Continue
+   again; the retry is idempotent. Only one identity per Google account exists at
+   a time. See `pomegranate-replace-key.md` for the full flow and server rules.
 
 If sign-in never offers/discovers, check that `central/login/google` returns a
 token whose base64 payload has an `email` tag, and that the operators confirmed

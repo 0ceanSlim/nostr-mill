@@ -314,14 +314,23 @@ MILL.open({
   of *that* identity (a threshold of them could rebuild it).
 - Returning users are discovered by Google account across clients; "Recover my
   key from operators" reconstructs the key from a threshold of shards.
+- The key behind a Google account can be **replaced** in-app ("Use a different
+  key with this Google account"): back up the old key, erase its shards at each
+  operator (one Google popup each), then shard a fresh or imported key. Still one
+  identity per account at a time — see the note below.
 
-> **One key per Google account.** Pomegranate's `central` keys each account by
-> email, so a given Google account maps to exactly one Nostr identity — a second
-> signup overwrites the first. Pomegranate "profiles" are multiple NIP-46
-> bunkers for the *same* npub (permission scopes), not separate identities. For
-> distinct identities, use bring-your-own-key with separate Google accounts;
-> multiple *distinct* npubs under one Google account would require forking
-> `central` (breaking cross-client interop) and is intentionally not supported.
+> **One key per Google account — but replaceable.** Pomegranate's `central`
+> keys each account by email, so a given Google account maps to exactly one
+> Nostr identity *at a time*. It can be **swapped from inside mill**: the idle
+> screen's "Use a different key with this Google account" link erases the old
+> shards (one Google confirmation popup per operator) and re-shards a fresh or
+> imported key in its place — after prompting the user to back up the old key
+> first, since the swap is irreversible. Pomegranate "profiles" are multiple
+> NIP-46 bunkers for the *same* npub (permission scopes), not separate
+> identities. For several distinct identities in parallel, use bring-your-own-key
+> with separate Google accounts; multiple *distinct* npubs under one Google
+> account would require forking `central` (breaking cross-client interop) and is
+> intentionally not supported.
 
 > **Experimental:** pomegranate is new and has no NIP yet — kinds/endpoints are
 > provisional and may change. It adds a FROST dependency
