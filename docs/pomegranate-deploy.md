@@ -41,10 +41,12 @@ up the **pomegranate infrastructure** it needs. It has two halves:
      // header/footer/branding as before …
    });
    ```
-   To pin your own servers instead, pass `pomegranate: { central, operators,
-   threshold, pinCentral: true }` (see Part B). When `pomegranate` is set it
-   becomes the "Continue with Google" method and **takes precedence** over the
-   Drive+PIN path, so there's no double button.
+   To run your own servers instead, pass `pomegranate: { central, operators,
+   threshold }` (see Part B). `pinCentral` now defaults to **true** (no discovery
+   redirect / "found elsewhere" interstitial); set `pinCentral: false` if you want
+   cross-central discovery. When `pomegranate` is set it becomes the "Continue with
+   Google" method and **takes precedence** over the Drive+PIN path — no double
+   button.
 3. **Remove** any `backupRelays` option and `backup-relays` attribute — they no
    longer exist in 1.7.
 4. **Leave your 1.6 Drive+PIN shim** (`mill-oauth.html` + its Google client)

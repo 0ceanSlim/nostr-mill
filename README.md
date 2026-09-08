@@ -295,14 +295,19 @@ client it is a normal NIP-46 bunker.
 // Simplest — join the shared njump ecosystem (recommended for interop):
 MILL.open({ pomegranate: true });
 
-// Or self-host / pin your own servers:
+// Or self-host / customise:
 MILL.open({
   pomegranate: {
-    central:   'https://central.yourdomain.com',        // pomegranate central server
+    central:   'https://central.yourdomain.com',        // default central (Advanced select)
     operators: ['https://op1…', 'https://op2…', 'https://op3…'],
-    threshold: 2,                                         // m-of-n (default ~7/12 of n)
+    threshold: 2,                                         // kept while ≤ n−1, else formula ~7/12 of n
     relays:    ['wss://relay.damus.io', /* … */],         // discovery relays (optional)
-    pinCentral: true,                                     // never redirect to another central (optional)
+    pinCentral: false,                                    // default true; false restores discovery + interstitial
+    centralChoices:  ['https://central.example.com'],     // extra centrals in the Advanced select
+    operatorChoices: ['https://po.oslim.dev'],            // extra operators, listed unchecked
+    allowCustomCentral: true,                             // false hides the central row (white-label)
+    allowCustomOperators: true,                           // false hides the operator rows
+    minOperators: 3,                                      // never create an account with fewer than this
   },
 });
 ```
@@ -400,7 +405,49 @@ is the least-surprising choice.
 > identity you already have); on "Use a different key", the choice to *replace the
 > key there* or *import here* at the configured central — importing publishes a
 > fresh announcement that supersedes the old pointer, which is how a migration
-> self-heals. `pinCentral: true` skips this entirely and always uses your central.
+> self-heals. Since `pinCentral` now defaults to **true**, this only appears when
+> a host sets `pinCentral: false`.
+
+### Advanced servers & operator downtime
+
+The idle screen is deliberately bare: **Continue with Google**, plus recover /
+"use a different key" links, and a collapsed **▸ Advanced**. Everything
+server-related lives inside Advanced, so most people never see it:
+
+```
+▸ Advanced
+  Central server   [ auth.njump.me (default) ▾ ]   (+ centralChoices, "Custom…")
+  Operators        ☑ ● po.f7z.io          ☑ ● po.coracle.social
+                   ☑ ● po.njump.me         ☑ ● po.jumble.social
+                   + Add operator…  [https://po.example.com] [Add]
+  Any 3 of the 4 selected operators can sign.
+  Applies to new accounts — existing accounts keep their recorded operators.
+                                                         Reset to defaults
+```
+
+- Status dots come from a 3 s CORS health probe when Advanced opens (and on Add):
+  green = up, grey = not responding. Informational only.
+- The threshold is read-only, recomputed from the *selected* count
+  (`min(n, max(2, ceil(7n/12)))`; an explicit host `threshold` is honoured while
+  `≤ n−1`). There's no manual threshold input — it's the easiest way to lock
+  yourself out.
+- A one-line summary appears under the button **only when the selection differs
+  from the defaults** (`auth.njump.me · N operators, M needed`), so the default
+  view stays clean but a custom choice is never invisible. Custom selections are
+  remembered in `localStorage` after a successful sign-in; "Reset to defaults"
+  clears them. `allowCustomCentral: false` / `allowCustomOperators: false`
+  white-label the rows away.
+
+**Operator downtime is tolerated at signup.** Registration is the one step that
+needs *every* listed operator to store a shard, so mill probes first and, if an
+operator is unreachable or errors (5xx) during signup/replace, **leaves it out**
+(re-dealing the same key across the rest) rather than failing — down to
+`minOperators` (default 3). The created screen and `onConnected`'s
+`result.pomegranate.skipped` say exactly what was left out and why. Signing needs
+nothing extra (central picks any threshold subset), and recovery already works
+with whichever operators answer. An account's operator set is fixed at signup, so
+this only applies to new accounts; a `4xx` (e.g. a stale-shard `403`) is surfaced,
+never silently skipped.
 
 ---
 
