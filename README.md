@@ -448,12 +448,14 @@ email is finally known), not on the pre-login screen.
 needs *every* listed operator to store a shard, so mill probes first and, if an
 operator is unreachable or errors (5xx) during signup/replace, **leaves it out**
 (re-dealing the same key across the rest) rather than failing — down to
-`minOperators` (default 3). The created screen and `onConnected`'s
-`result.pomegranate.skipped` say exactly what was left out and why. Signing needs
-nothing extra (central picks any threshold subset), and recovery already works
-with whichever operators answer. An account's operator set is fixed at signup, so
-this only applies to new accounts; a `4xx` (e.g. a stale-shard `403`) is surfaced,
-never silently skipped.
+`minOperators` (default 3). The user only sees a soft one-line note ("1 operator
+was left out"); the raw server responses from every step (probe, register,
+operator errors, retries, connect) are collected under a collapsed **Details**
+disclosure, and `onConnected`'s `result.pomegranate.skipped` carries the machine
+form. Signing needs nothing extra (central picks any threshold subset), and
+recovery already works with whichever operators answer. An account's operator set
+is fixed at signup, so this only applies to new accounts; a `4xx` (e.g. a
+stale-shard `403`) is surfaced, never silently skipped.
 
 ---
 
