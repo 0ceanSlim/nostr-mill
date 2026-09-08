@@ -140,8 +140,12 @@ export async function discover(email, relays = DEFAULT_DISCOVERY_RELAYS) {
   if (!email) return null;
   const pool = new SimplePool();
   try {
-    const evt = await pool.get(relays, { kinds: [POM_KINDS.ANNOUNCE], '#m': [discoveryTag(email)] }, { maxWait: 5000 });
-    if (!evt) return null;
+    // Collect all matching announcements and prefer the newest: replacing the key
+    // publishes a fresh 16440 while the old one lingers on relays, so a single
+    // `get` could hand back the stale pointer.
+    const events = await pool.querySync(relays, { kinds: [POM_KINDS.ANNOUNCE], '#m': [discoveryTag(email)] }, { maxWait: 5000 });
+    if (!events || !events.length) return null;
+    const evt = events.reduce((a, b) => (b.created_at > a.created_at ? b : a));
     const centralURL = evt.tags.find(t => t[0] === 'central')?.[1];
     return centralURL ? { centralURL: massageURL(centralURL), createdAt: evt.created_at } : null;
   } catch { return null; }
@@ -209,7 +213,12 @@ export async function signup({ centralURL, token, email, operators, threshold, s
     headers: { 'Content-Type': 'application/json', Authorization: 'Token ' + token, 'X-Pomegranate-Session': session },
     body: JSON.stringify(regEvent),
   });
-  if (!regResp.ok) throw new Error('Central registration failed.');
+  if (!regResp.ok) {
+    const e = new Error('Central registration failed.');
+    e.status = regResp.status;
+    try { e.body = await regResp.text(); } catch {}
+    throw e;
+  }
 
   // Register the secret shard with each operator (kind 20444).
   for (let i = 0; i < ops.length; i++) {
@@ -225,7 +234,13 @@ export async function signup({ centralURL, token, email, operators, threshold, s
       headers: { 'Content-Type': 'application/json', 'X-Pomegranate-Operator-Token': opToken },
       body: JSON.stringify(opEvent),
     });
-    if (!opResp.ok) throw new Error(`Operator registration failed for ${ops[i]}.`);
+    if (!opResp.ok) {
+      const e = new Error(`Operator registration failed for ${ops[i]}.`);
+      e.operator = ops[i];
+      e.status = opResp.status;
+      try { e.body = await opResp.text(); } catch {}
+      throw e;
+    }
   }
 
   // Wait for central to see the account come online.
@@ -241,6 +256,47 @@ export async function signup({ centralURL, token, email, operators, threshold, s
   await publishAnnouncement({ ...account, email }, c, sk, relays);
   const handler = await ensureDefaultProfile(c, token);
   return { pubkey, bunkerURI: bunkerURI(handler, c), nsec: nip19.nsecEncode(sk) };
+}
+
+// ── Replace the key behind an account ───────────────────────────────────────────
+/**
+ * DELETE the pomegranate account at `central` (clears the account, its profiles
+ * and handler keys, and any pending registration; existing bunker URIs stop
+ * working). Idempotent — a `204` or any 2xx counts as done. Errors carry
+ * `status`/`body` so a `401` can trigger one re-auth + retry by the caller.
+ */
+export async function deleteAccount(centralURL, token) {
+  const c = massageURL(centralURL);
+  const r = await fetch(c + '/account', { method: 'DELETE', headers: { Authorization: 'Token ' + token } });
+  if (r.ok || r.status === 204) return true;
+  const e = new Error('Could not erase the existing account.');
+  e.status = r.status;
+  try { e.body = await r.text(); } catch {}
+  throw e;
+}
+
+/**
+ * Open one operator's erase page (`/po/erase/google`). That page runs its own
+ * Google OAuth and closes itself on BOTH "erase" and "cancel", sending no
+ * message — so all we can observe is the window closing. Resolves then; the real
+ * proof an erase happened is a later `/po/register` succeeding (a 403 means it
+ * did not). Rejects only if the popup was blocked.
+ */
+export function erasePopup(operatorURL, { timeoutMs = 300_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const o = massageURL(operatorURL);
+    const w = window.open(`${o}/po/erase/google`, 'pomegranate', 'width=600,height=680');
+    if (!w) { reject(new Error('Popup blocked. Allow popups for this site and try again.')); return; }
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearInterval(closed); clearTimeout(timer); resolve(); };
+    const closed = setInterval(() => { if (w.closed) finish(); }, 500);
+    const timer = setTimeout(() => { try { w.close(); } catch {} finish(); }, timeoutMs);
+  });
+}
+
+/** True when an operator refused re-registration because its old shard wasn't erased. */
+export function isShardConflict(err) {
+  return !!(err && err.status === 403 && /different pubkey/i.test(err.body || ''));
 }
 
 // ── Recovery ────────────────────────────────────────────────────────────────

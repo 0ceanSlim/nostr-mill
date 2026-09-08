@@ -41,7 +41,9 @@ import { encryptCloudBlob, decryptCloudBlob, exportNcryptsec } from './cloudkey.
 import { listBackups, downloadBackup, uploadBackup, deleteBackup, withAuth } from './drive.js';
 import {
   authenticate as pomAuthenticate, tokenEmail as pomTokenEmail, discover as pomDiscover,
-  loginExisting as pomLogin, signup as pomSignup, requestOperatorShard, reconstructFromShards,
+  loginExisting as pomLogin, getAccount as pomGetAccount, signup as pomSignup,
+  deleteAccount as pomDeleteAccount, erasePopup as pomErasePopup, isShardConflict as pomIsShardConflict,
+  requestOperatorShard, reconstructFromShards,
   massageURL as pomMassageURL,
 } from './pomegranate.js';
 
@@ -1958,9 +1960,40 @@ function renderPomegranateFlow(host, onDone, onBack) {
   let auth = null;                      // { centralURL, token, email } after Google login, before account creation
   let mode = 'generate';               // 'generate' | 'import' — bring-your-own-key at signup
   let nsecVal = '';                    // pasted key when mode === 'import'
+  let intent = 'signin';               // 'signin' | 'replace' — replace swaps the key behind this Google account
+  let account = null;                   // { pubkey, operators, threshold } of the account being replaced
+  let returnTo = '';                    // where the recover step's Done returns (e.g. 'replace-confirm')
+  let backedUp = false;                 // set once the user backs up the old key during a replace
+  let ackReplace = false;               // "I understand my key will be erased" checkbox
+  const eraseRequested = {};            // operatorURL -> true once its erase popup has opened+closed
   const shards = {};                    // operatorURL -> shard hex (recovery)
   const container = h('div', {});
   const appName = () => host.getAttribute?.('app-name') || document.title || 'Nostr App';
+
+  // Operators that hold the CURRENT account's shards (may differ from configured).
+  const eraseTargets = () => (account?.operators || []).map(o => pomMassageURL(typeof o === 'string' ? o : o.url));
+
+  // Shared generate/import chooser (used by new-account and replace-confirm):
+  // appends the toggle + (when importing) the nsec field to `body`, wires
+  // mode/nsecVal, and calls syncBtn() on input so the caller gates its button.
+  function keyChooser(body, syncBtn) {
+    const seg = h('div', { style: { display: 'flex', gap: '4px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px', padding: '4px' } });
+    const segBtn = (id, label) => h('button', { class: 'mill-btn', style: { flex: '1', padding: '8px', fontSize: '12.5px', background: mode === id ? 'var(--mill-accent-dim)' : 'transparent', color: mode === id ? 'var(--mill-accent)' : 'var(--mill-muted)', border: mode === id ? '1px solid var(--mill-accent)' : '1px solid transparent' }, onClick: () => { mode = id; errMsg = ''; render(); } }, label);
+    seg.appendChild(segBtn('generate', 'Create new key'));
+    seg.appendChild(segBtn('import', 'Import my key'));
+    body.appendChild(seg);
+    if (mode === 'import') {
+      const { wrap: fw } = field('Private Key (nsec or hex)', 'nsec1… or 64-char hex', nsecVal, v => { nsecVal = v; errMsg = ''; syncBtn(); }, { mono: true });
+      body.appendChild(fw);
+    }
+  }
+
+  function checkboxRow(label, checked, onChange) {
+    const input = h('input', { type: 'checkbox', style: { marginTop: '3px', flex: '0 0 auto' } });
+    input.checked = checked;
+    input.addEventListener('change', e => onChange(e.target.checked));
+    return h('label', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer', fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.4' } }, input, h('span', {}, label));
+  }
 
   // Take a pomegranate bunker URI and connect via mill's existing NIP-46 path.
   async function connectBunker(bunkerURI, render) {
@@ -1992,6 +2025,17 @@ function renderPomegranateFlow(host, onDone, onBack) {
         activeCentral = found.centralURL;
         token = await pomAuthenticate(activeCentral);   // re-auth at the discovered central
       }
+      if (intent === 'replace') {
+        // Read the account WITHOUT loginExisting (which would create a default
+        // profile) so we can erase it cleanly.
+        const acct = await pomGetAccount(activeCentral, token);
+        auth = { centralURL: activeCentral, token, email };
+        backedUp = false; ackReplace = false; nsecVal = '';
+        Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
+        if (!acct) { account = null; mode = 'import'; step = 'new-account'; render(); return; }
+        account = acct; mode = 'import';
+        step = 'replace-confirm'; render(); return;
+      }
       const existing = await pomLogin(activeCentral, token);
       if (existing) { await connectBunker(existing.bunkerURI, render); return; }
       // No account yet → let the user generate a fresh key or import their own.
@@ -2001,6 +2045,48 @@ function renderPomegranateFlow(host, onDone, onBack) {
     } catch (e) {
       errMsg = e.message || 'Google sign-in failed.';
       step = 'idle'; render();
+    }
+  }
+
+  async function eraseAt(operatorURL, render) {
+    errMsg = ''; render();
+    try {
+      await pomErasePopup(operatorURL);
+      eraseRequested[operatorURL] = true;   // "requested" — confirm vs cancel is indistinguishable here
+      render();
+    } catch (e) { errMsg = e.message || 'Could not open the erase window.'; render(); }
+  }
+
+  async function doReplace(render) {
+    step = 'replacing'; statusMsg = 'Erasing the old account…'; errMsg = ''; render();
+    try {
+      const secretKey = mode === 'import' ? hexToBytes(nsecToHex(nsecVal.trim())) : undefined;
+      // Delete first (also clears any pending registration), re-auth once on 401.
+      try {
+        await pomDeleteAccount(auth.centralURL, auth.token);
+      } catch (e) {
+        if (e.status === 401) { auth.token = await pomAuthenticate(auth.centralURL); await pomDeleteAccount(auth.centralURL, auth.token); }
+        else throw e;
+      }
+      statusMsg = 'Registering your new key…'; render();
+      const res = await pomSignup({ centralURL: auth.centralURL, token: auth.token, email: auth.email, operators, threshold, secretKey, relays });
+      window.__pomBunker = res.bunkerURI;
+      if (mode === 'import') {
+        // They brought the key — nothing to reveal. Straight into the signer.
+        await connectBunker(res.bunkerURI, render);
+      } else {
+        createdNsec = res.nsec; nsecSaved = false;
+        step = 'created'; render();   // reveal the fresh nsec once, then Continue
+      }
+    } catch (e) {
+      if (pomIsShardConflict(e) && e.operator) {
+        // That operator's erase was cancelled — it still holds the old share.
+        delete eraseRequested[pomMassageURL(e.operator)];
+        errMsg = `${e.operator.replace(/^https?:\/\//, '')} still holds your old share — erase it and continue.`;
+      } else {
+        errMsg = e.message || 'Could not replace your key.';
+      }
+      step = 'replace-erase'; render();
     }
   }
 
@@ -2043,9 +2129,11 @@ function renderPomegranateFlow(host, onDone, onBack) {
       body.appendChild(badge('info', '🔒', 'How this works', 'A Nostr key is created for you and split into encrypted shares across several operators (a threshold is needed to sign). Google is only used to prove it’s you. Signing happens remotely — the full key is never reassembled.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
-        onClick: () => { step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
+        onClick: () => { returnTo = ''; step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
+        onClick: () => { intent = 'replace'; errMsg = ''; start(render); } }, 'Use a different key with this Google account'));
       footer.appendChild(btn('Back', 'ghost', onBack));
-      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => start(render)));
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }));
       container.appendChild(wrap);
 
     } else if (step === 'new-account') {
@@ -2053,15 +2141,8 @@ function renderPomegranateFlow(host, onDone, onBack) {
       const keyOk = () => !importing || isValidNsec(nsecVal.trim());
       const goBtn = btn(importing ? 'Import & Shard' : 'Create Account', 'primary', () => { if (keyOk()) doSignup(render); }, !keyOk());
       const { wrap, body, footer } = flowWrap({ step: 1, total: 3, title: 'Set Up Your Account', subtitle: 'Create a fresh key, or bring your own to shard across the operators.', onBack: () => { step = 'idle'; render(); } });
-      // Toggle: generate vs import
-      const seg = h('div', { style: { display: 'flex', gap: '4px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px', padding: '4px', marginBottom: '4px' } });
-      const segBtn = (id, label) => h('button', { class: 'mill-btn', style: { flex: '1', padding: '8px', fontSize: '12.5px', background: mode === id ? 'var(--mill-accent-dim)' : 'transparent', color: mode === id ? 'var(--mill-accent)' : 'var(--mill-muted)', border: mode === id ? '1px solid var(--mill-accent)' : '1px solid transparent' }, onClick: () => { mode = id; errMsg = ''; render(); } }, label);
-      seg.appendChild(segBtn('generate', 'Create new key'));
-      seg.appendChild(segBtn('import', 'Import my key'));
-      body.appendChild(seg);
+      keyChooser(body, () => { goBtn.disabled = !keyOk(); });
       if (importing) {
-        const { wrap: fw } = field('Private Key (nsec or hex)', 'nsec1… or 64-char hex', nsecVal, v => { nsecVal = v; errMsg = ''; goBtn.disabled = !keyOk(); }, { mono: true });
-        body.appendChild(fw);
         body.appendChild(badge('warning', '⚠️', 'Sharding an existing identity', 'Your key will be split into shares and sent to the operators. They become semi-custodians of THIS identity — any threshold of them could rebuild it. Only do this with operators you trust, and keep your own backup of the key.'));
       } else {
         body.appendChild(badge('info', '🎲', 'Fresh key', 'A brand-new key is generated in your browser, sharded, and distributed. You never have to write anything down (though you can back it up on the next screen).'));
@@ -2071,9 +2152,58 @@ function renderPomegranateFlow(host, onDone, onBack) {
       footer.appendChild(goBtn);
       container.appendChild(wrap);
 
-    } else if (step === 'connecting' || step === 'creating' || step === 'connecting-signer') {
-      const sub = step === 'creating' ? 'Splitting and distributing your key…' : step === 'connecting-signer' ? 'Connecting to your signer…' : 'Approve access in the Google window.';
-      const { wrap, body } = flowWrap({ step: 1, total: 3, title: step === 'creating' ? 'Creating your account…' : 'Connecting…', subtitle: sub });
+    } else if (step === 'replace-confirm') {
+      const importing = mode === 'import';
+      const targets = eraseTargets();
+      const isSameKey = () => {
+        if (!importing || !isValidNsec(nsecVal.trim())) return false;
+        try { return getPublicKey(hexToBytes(nsecToHex(nsecVal.trim()))) === account.pubkey; } catch { return false; }
+      };
+      const keyValid = () => !importing || (isValidNsec(nsecVal.trim()) && !isSameKey());
+      const canReplace = () => ackReplace && keyValid();
+      const sameKeyErr = h('div', { class: 'mill-error', hidden: true }, "That's already the key on this account.");
+      const replaceBtn = btn('Replace key', 'danger', () => { if (canReplace()) { errMsg = ''; step = 'replace-erase'; render(); } }, !canReplace());
+      const sync = () => { sameKeyErr.hidden = !isSameKey(); replaceBtn.disabled = !canReplace(); };
+
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 4, title: 'Replace Your Key', subtitle: 'Put a different Nostr identity behind this Google account.', onBack: () => { step = 'idle'; render(); } });
+      body.appendChild(keyDisplay(`Current identity — sharded across ${targets.length} operators, ${account.threshold} needed`, hexToNpub(account.pubkey)));
+      body.appendChild(badge('danger', '⚠️', 'This permanently replaces your current identity', `This replaces the identity tied to ${auth.email}. Your posts, follows and messages belong to the current key; after replacing, nothing can sign as it again unless you keep a backup. If this identity matters to you, back it up first.`));
+      body.appendChild(btn('Back up current key first', 'ghost', () => { returnTo = 'replace-confirm'; step = 'recover'; errMsg = ''; render(); }));
+      if (backedUp) body.appendChild(h('div', { class: 'mill-hint' }, '✅ Backed up'));
+      keyChooser(body, sync);
+      if (importing) body.appendChild(sameKeyErr);
+      body.appendChild(checkboxRow('I understand my current key will be erased from the operators and this cannot be undone.', ackReplace, v => { ackReplace = v; sync(); }));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
+      footer.appendChild(replaceBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'replace-erase') {
+      const targets = eraseTargets();
+      const allRequested = targets.length > 0 && targets.every(op => eraseRequested[op]);
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 4, title: 'Erase Old Shares', subtitle: 'Sign in with Google at each operator and confirm the erase.', onBack: () => { step = 'replace-confirm'; render(); } });
+      body.appendChild(h('div', { class: 'mill-hint' }, 'Do all of them — stopping halfway leaves your old key unrecoverable with no new key in place.'));
+      targets.forEach(op => {
+        const have = !!eraseRequested[op];
+        const row = h('div', { class: 'mill-grant-row' });
+        row.appendChild(h('div', { class: 'mill-grant-left' }, h('div', { class: 'mill-grant-kind' }, `${have ? '✅' : '⏳'} ${op.replace(/^https?:\/\//, '')}`)));
+        row.appendChild(h('div', { class: 'mill-grant-actions' },
+          btn(have ? 'Requested' : 'Erase', 'ghost', () => { if (!have) eraseAt(op, render); })));
+        body.appendChild(row);
+      });
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'replace-confirm'; render(); }));
+      footer.appendChild(btn('Continue', 'primary', () => doReplace(render), !allRequested));
+      container.appendChild(wrap);
+
+    } else if (step === 'connecting' || step === 'creating' || step === 'connecting-signer' || step === 'replacing') {
+      const isReplace = step === 'replacing';
+      const title = step === 'creating' ? 'Creating your account…' : isReplace ? 'Replacing your key…' : 'Connecting…';
+      const sub = step === 'creating' ? 'Splitting and distributing your key…'
+        : isReplace ? (statusMsg || 'Working…')
+        : step === 'connecting-signer' ? 'Connecting to your signer…'
+        : 'Approve access in the Google window.';
+      const { wrap, body } = flowWrap({ step: isReplace ? 2 : 1, total: isReplace ? 4 : 3, title, subtitle: sub });
       const center = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '30px 0' } });
       center.appendChild(spinner()); center.appendChild(h('span', { style: { color: 'var(--mill-text-secondary)' } }, statusMsg || 'One moment…'));
       body.appendChild(center);
@@ -2088,7 +2218,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
       container.appendChild(wrap);
 
     } else if (step === 'recover') {
-      const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Recover Your Key', subtitle: 'Sign in with Google at each operator to collect your key shares. Once enough are collected, your key is reassembled here, in your browser.', onBack: () => { step = 'idle'; render(); } });
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Recover Your Key', subtitle: 'Sign in with Google at each operator to collect your key shares. Once enough are collected, your key is reassembled here, in your browser.', onBack: () => { step = returnTo || 'idle'; render(); } });
       body.appendChild(h('div', { class: 'mill-hint' }, `Collected ${Object.keys(shards).length} of ${threshold} needed.`));
       operators.forEach(op => {
         const have = !!shards[op];
@@ -2099,7 +2229,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
         body.appendChild(row);
       });
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
+      footer.appendChild(btn('Back', 'ghost', () => { step = returnTo || 'idle'; render(); }));
       container.appendChild(wrap);
 
     } else if (step === 'recovered') {
@@ -2107,7 +2237,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
       body.appendChild(keyDisplay('Private Key (nsec) — KEEP SECRET', recovered.nsec, true));
       body.appendChild(keyDisplay('Public Key (npub)', recovered.npub));
       body.appendChild(badge('warning', '🔑', 'This is your full key', 'Store it in a password manager or offline. Anyone with it controls your account.'));
-      footer.appendChild(btn('Done', 'primary', () => { step = 'idle'; render(); }));
+      footer.appendChild(btn('Done', 'primary', () => { if (returnTo) { backedUp = true; step = returnTo; returnTo = ''; } else { step = 'idle'; } render(); }));
       container.appendChild(wrap);
     }
   }
