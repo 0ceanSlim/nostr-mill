@@ -2074,26 +2074,43 @@ function renderPomegranateFlow(host, onDone, onBack) {
     }
   }
 
-  // Route to the right step once we hold a valid token for `centralURL`.
+  // Route to the right step once we hold a valid token for `centralURL`. We read
+  // the account with getAccount (not loginExisting — that would create a default
+  // profile before the user commits).
   async function proceedAt(centralURL, token, render) {
     const email = pomTokenEmail(token);
+    auth = { centralURL, token, email };
+    const acct = await pomGetAccount(centralURL, token);
     if (intent === 'replace') {
-      // Read the account WITHOUT loginExisting (which would create a default
-      // profile) so we can erase it cleanly.
-      const acct = await pomGetAccount(centralURL, token);
-      auth = { centralURL, token, email };
       backedUp = false; ackReplace = false; nsecVal = '';
       Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
       if (!acct) { account = null; mode = 'import'; step = 'new-account'; render(); return; }
       account = acct; mode = 'import';
       step = 'replace-confirm'; render(); return;
     }
-    const existing = await pomLogin(centralURL, token);
-    if (existing) { await connectBunker(existing.bunkerURI, render); return; }
-    // No account yet → let the user generate a fresh key or import their own.
-    auth = { centralURL, token, email };
-    mode = 'generate'; nsecVal = '';
-    step = 'new-account'; render();
+    // Sign-in: new account → set one up; existing → confirm on the signed-in
+    // screen (the point where we finally know the email/account) before connecting.
+    if (!acct) { mode = 'generate'; nsecVal = ''; step = 'new-account'; render(); return; }
+    account = acct; step = 'signed-in'; render();
+  }
+
+  // Continue from the signed-in screen: resolve the bunker (creating the default
+  // profile now) and connect.
+  async function continueSignedIn(render) {
+    step = 'connecting-signer'; statusMsg = 'Connecting to your signer…'; errMsg = ''; render();
+    try {
+      const existing = await pomLogin(auth.centralURL, auth.token);
+      if (!existing) { errMsg = 'Your account could not be resolved. Try again.'; step = 'signed-in'; render(); return; }
+      await connectBunker(existing.bunkerURI, render);
+    } catch (e) { errMsg = e.message || 'Could not connect to your signer.'; step = 'signed-in'; render(); }
+  }
+
+  // From the signed-in screen: switch to replacing the key (email/account known).
+  function startReplaceFromSignedIn(render) {
+    intent = 'replace'; mode = 'import'; nsecVal = '';
+    backedUp = false; ackReplace = false; errMsg = '';
+    Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
+    step = 'replace-confirm'; render();
   }
 
   async function start(render) {
@@ -2285,27 +2302,20 @@ function renderPomegranateFlow(host, onDone, onBack) {
     } else if (step === 'idle') {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Sign in with Google — your key is split across independent servers and never held whole.', onBack });
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      // Account actions — small links, always visible.
-      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
-        onClick: () => { returnTo = ''; step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
-      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
-        onClick: () => { intent = 'replace'; errMsg = ''; start(render); } }, 'Use a different key with this Google account'));
 
-      // Advanced disclosure — how-it-works + servers, collapsed by default so most
-      // users never see the central/operator/threshold machinery.
-      if (allowCustomCentral || allowCustomOperators) {
-        body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '6px', fontWeight: '600' },
-          onClick: () => { advancedOpen = !advancedOpen; render(); if (advancedOpen) probeAdvanced(render); } }, `${advancedOpen ? '▾' : '▸'} Advanced`));
-      }
+      // Advanced disclosure — how-it-works, servers, and recovery. Collapsed by
+      // default so most users never see any of the machinery.
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '6px', fontWeight: '600' },
+        onClick: () => { advancedOpen = !advancedOpen; render(); if (advancedOpen) probeAdvanced(render); } }, `${advancedOpen ? '▾' : '▸'} Advanced`));
       if (advancedOpen) {
         const panel = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '10px', border: '1px solid var(--mill-border)', borderRadius: '10px', background: 'var(--mill-inset)' } });
         panel.appendChild(badge('info', '🔒', 'How this works', 'A Nostr key is created for you and split into encrypted shares across several operators (a threshold is needed to sign). Google only proves it’s you; the full key is never reassembled.'));
         if (allowCustomCentral) {
           panel.appendChild(h('div', { class: 'mill-label' }, 'Central server'));
           if (!customCentralMode) {
-            const sel = h('select', { class: 'mill-input', onChange: e => { if (e.target.value === '__custom__') { customCentralMode = true; } else { selectedCentral = e.target.value; } render(); } });
-            centralChoices.forEach(c => { const o = h('option', { value: c }, c.replace(/^https?:\/\//, '') + (c === defaultCentral ? ' (default)' : '')); if (c === selectedCentral) o.selected = true; sel.appendChild(o); });
-            sel.appendChild(h('option', { value: '__custom__' }, 'Custom…'));
+            const sel = h('select', { class: 'mill-input', style: { width: '100%', background: 'var(--mill-surface)', color: 'var(--mill-text)', border: '1px solid var(--mill-border)', borderRadius: '8px', padding: '8px 10px', fontSize: '13px' }, onChange: e => { if (e.target.value === '__custom__') { customCentralMode = true; } else { selectedCentral = e.target.value; } render(); } });
+            centralChoices.forEach(c => { const o = h('option', { value: c, style: { background: 'var(--mill-surface)', color: 'var(--mill-text)' } }, c.replace(/^https?:\/\//, '') + (c === defaultCentral ? ' (default)' : '')); if (c === selectedCentral) o.selected = true; sel.appendChild(o); });
+            sel.appendChild(h('option', { value: '__custom__', style: { background: 'var(--mill-surface)', color: 'var(--mill-text)' } }, 'Custom…'));
             panel.appendChild(sel);
           } else {
             const { wrap: cw, input: ci } = field('', 'https://central.example.com', '', () => {}, {}); cw.style.flex = '1';
@@ -2318,10 +2328,13 @@ function renderPomegranateFlow(host, onDone, onBack) {
           panel.appendChild(h('div', { class: 'mill-label' }, 'Operators'));
           selectedOperators.forEach(o => {
             const st = probeStatus[o.url];
-            const dot = h('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', flex: '0 0 auto', background: st === 'up' ? 'var(--mill-success)' : st === 'down' ? 'var(--mill-muted)' : 'var(--mill-border)' } });
+            const title = st === 'up' ? 'Responding' : st === 'down' ? 'Not responding' : 'Checking…';
+            const dot = h('span', { title, style: { display: 'inline-block', width: '9px', height: '9px', borderRadius: '50%', flex: '0 0 auto', background: st === 'up' ? 'var(--mill-success)' : st === 'down' ? 'var(--mill-danger)' : 'var(--mill-border)' } });
             const cb = h('input', { type: 'checkbox' }); cb.checked = o.checked; cb.addEventListener('change', e => { o.checked = e.target.checked; render(); });
-            panel.appendChild(h('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' } }, cb, dot, h('span', {}, o.url.replace(/^https?:\/\//, '') + (st === 'down' ? ' (not responding)' : ''))));
+            panel.appendChild(h('label', { title, style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' } }, cb, dot, h('span', {}, o.url.replace(/^https?:\/\//, '') + (st === 'down' ? ' — not responding' : ''))));
           });
+          panel.appendChild(h('div', { class: 'mill-hint', style: { display: 'flex', gap: '12px', alignItems: 'center' } },
+            h('span', {}, '● responding'), h('span', { style: { color: 'var(--mill-danger)' } }, '● not responding')));
           const { wrap: aw, input: ai } = field('', 'https://po.example.com', '', () => {}, {}); aw.style.flex = '1';
           const addBtn = btn('Add', 'ghost small', () => { const v = ai.value.trim(); if (!pomIsValidServerURL(v)) { errMsg = 'Enter a valid https:// operator URL'; render(); return; } const u = pomMassageURL(v); if (!selectedOperators.find(x => x.url === u)) selectedOperators.push({ url: u, checked: true }); errMsg = ''; render(); probeAdvanced(render, [u]); });
           panel.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } }, aw, addBtn));
@@ -2329,6 +2342,9 @@ function renderPomegranateFlow(host, onDone, onBack) {
         const n = chosenOperators().length;
         panel.appendChild(h('div', { class: 'mill-hint' }, n >= minOperators ? `Any ${effThreshold()} of the ${n} selected operators can sign.` : `Select at least ${minOperators} operators.`));
         panel.appendChild(h('div', { class: 'mill-hint' }, 'Applies to new accounts — existing accounts keep their recorded operators.'));
+        // Recovery lives here — a rare, advanced action.
+        panel.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
+          onClick: () => { returnTo = ''; step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
         if (!isDefaultSelection()) panel.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', onClick: () => { resetServers(); errMsg = ''; render(); } }, 'Reset to defaults'));
         body.appendChild(panel);
       }
@@ -2340,6 +2356,17 @@ function renderPomegranateFlow(host, onDone, onBack) {
       const blockPrimary = customCentralMode || chosenOperators().length < minOperators;
       footer.appendChild(btn('Back', 'ghost', onBack));
       footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }, blockPrimary));
+      container.appendChild(wrap);
+
+    } else if (step === 'signed-in') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 1, title: 'Signed In', subtitle: 'Your Google account is linked to this Nostr identity.', onBack: () => { step = 'idle'; render(); } });
+      body.appendChild(badge('success', '✅', 'You’re signed in', 'Continue to start using your account, or swap in a different key.'));
+      body.appendChild(keyDisplay('Your account (npub)', hexToNpub(account.pubkey)));
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
+        onClick: () => startReplaceFromSignedIn(render) }, 'Use a different key with this Google account'));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
+      footer.appendChild(btn('Continue', 'primary', () => continueSignedIn(render)));
       container.appendChild(wrap);
 
     } else if (step === 'found-elsewhere') {

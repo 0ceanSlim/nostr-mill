@@ -410,23 +410,29 @@ is the least-surprising choice.
 
 ### Advanced servers & operator downtime
 
-The idle screen is deliberately bare: **Continue with Google**, plus recover /
-"use a different key" links, and a collapsed **▸ Advanced**. Everything
-server-related lives inside Advanced, so most people never see it:
+The idle screen is deliberately bare — **Continue with Google** and a collapsed
+**▸ Advanced**. Everything else (how-it-works, servers, and **Recover my key**)
+lives inside Advanced, so most people never see it:
 
 ```
 ▸ Advanced
+  How this works …
   Central server   [ auth.njump.me (default) ▾ ]   (+ centralChoices, "Custom…")
   Operators        ☑ ● po.f7z.io          ☑ ● po.coracle.social
-                   ☑ ● po.njump.me         ☑ ● po.jumble.social
+                   ☑ ● po.njump.me         ☑ ● po.jumble.social  (red ● = not responding)
                    + Add operator…  [https://po.example.com] [Add]
   Any 3 of the 4 selected operators can sign.
   Applies to new accounts — existing accounts keep their recorded operators.
-                                                         Reset to defaults
+  Recover my key from operators                          Reset to defaults
 ```
 
+Returning users (an account already exists for the Google account) land on a
+**Signed In** screen showing their npub, with **Continue** and **Use a different
+key** — so replacing the key happens *after* Google links the account (when the
+email is finally known), not on the pre-login screen.
+
 - Status dots come from a 3 s CORS health probe when Advanced opens (and on Add):
-  green = up, grey = not responding. Informational only.
+  green = responding, red = not responding. Informational only.
 - The threshold is read-only, recomputed from the *selected* count
   (`min(n, max(2, ceil(7n/12)))`; an explicit host `threshold` is honoured while
   `≤ n−1`). There's no manual threshold input — it's the easiest way to lock
