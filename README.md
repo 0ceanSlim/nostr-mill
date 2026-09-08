@@ -307,9 +307,21 @@ MILL.open({
 - It needs a running **`central` + `operator` servers** you (or someone) host —
   see the [handoff/deploy guide](docs/pomegranate-deploy.md). The central is the
   Google OAuth handler, so mill needs no shim for this path.
-- Signup FROST-shards a new key and offers the nsec once for optional backup;
-  returning users are discovered by Google account across clients; "Recover my
+- At signup the user can **generate a fresh key** or **bring their own**
+  (import an existing `nsec`/hex) to shard — so an established identity can move
+  onto pomegranate, not just a brand-new one. Either way the nsec is shown once
+  for optional backup. Importing warns that the operators become semi-custodians
+  of *that* identity (a threshold of them could rebuild it).
+- Returning users are discovered by Google account across clients; "Recover my
   key from operators" reconstructs the key from a threshold of shards.
+
+> **One key per Google account.** Pomegranate's `central` keys each account by
+> email, so a given Google account maps to exactly one Nostr identity — a second
+> signup overwrites the first. Pomegranate "profiles" are multiple NIP-46
+> bunkers for the *same* npub (permission scopes), not separate identities. For
+> distinct identities, use bring-your-own-key with separate Google accounts;
+> multiple *distinct* npubs under one Google account would require forking
+> `central` (breaking cross-client interop) and is intentionally not supported.
 
 > **Experimental:** pomegranate is new and has no NIP yet — kinds/endpoints are
 > provisional and may change. It adds a FROST dependency

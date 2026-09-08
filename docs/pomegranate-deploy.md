@@ -145,10 +145,11 @@ central/operators publish there too, or discovery won't line up across clients.
 
 1. Demo → **Continue with Google** → the Google popup is served by
    `central.oslim.dev/login/google`. Approve.
-2. **First run:** it should create an account — watch central + operator logs for
-   the `POST /register` and `POST /po/register` calls, then the account coming
-   online. mill shows the nsec once (optional backup) → **Continue** → it connects
-   the NIP-46 bunker and you're signed in.
+2. **First run:** it should reach **Set Up Your Account** → choose **Create new
+   key** (or **Import my key** to shard an existing nsec/hex — see BYOK below) →
+   watch central + operator logs for the `POST /register` and `POST /po/register`
+   calls, then the account coming online. mill shows the nsec once (optional
+   backup) → **Continue** → it connects the NIP-46 bunker and you're signed in.
 3. **Returning run** (same Google account, even a different browser/app): it
    should discover the account (kind:16440), resolve the bunker, and sign in with
    the **same npub** — no new key.
@@ -163,6 +164,24 @@ registration with central (central marks the account "operational" only after al
 operators ack).
 
 ---
+
+## Keys & accounts (BYOK and multi-account)
+
+- **Bring-your-own-key (BYOK):** at signup, **Import my key** lets a user shard
+  an existing `nsec`/hex instead of a freshly generated one. mill decodes it in
+  the browser, FROST-shards it, and registers it exactly like a new key. Useful
+  for moving an established identity onto pomegranate. The UI warns that the
+  operators then become semi-custodians of that identity — a threshold could
+  rebuild it — so it's a trust decision the user makes knowingly.
+- **One key per Google account.** `central` keys the account record by email, so
+  each Google account resolves to exactly one npub; a second signup overwrites
+  the first. Pomegranate **profiles** are multiple NIP-46 bunkers for the *same*
+  identity (permission scopes), not distinct npubs.
+- **Want multiple identities?** Use BYOK with **separate Google accounts** — that
+  works today with stock pomegranate. Supporting several *distinct* npubs under a
+  single Google account would mean forking `central` to key by `[email, index]`,
+  which breaks cross-client interop with other pomegranate clients and centrals.
+  mill deliberately does not do this.
 
 ## What mill does vs. what you host
 
