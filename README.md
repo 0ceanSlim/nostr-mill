@@ -285,28 +285,38 @@ type SigningPerms = Record<string, 'session' | 'prompt'>;
 
 The **cross-client** Google path: a user signs in with Google in *any*
 implementing client and gets the *same* Nostr identity. This is a client of
-fiatjaf's [pomegranate](https://fiatjaf.com/pomegranate) — the key is
+fiatjaf's [pomegranate](https://gitworkshop.dev/npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6/pomegranate) — the key is
 **FROST-sharded** across independent operator servers and never stored whole (no
 app, including mill, ever holds it); Google only authenticates the user to the
 operators; signing runs over NIP-46 through a `central` coordinator. To any
 client it is a normal NIP-46 bunker.
 
 ```js
+// Simplest — join the shared njump ecosystem (recommended for interop):
+MILL.open({ pomegranate: true });
+
+// Or self-host / pin your own servers:
 MILL.open({
   pomegranate: {
     central:   'https://central.yourdomain.com',        // pomegranate central server
     operators: ['https://op1…', 'https://op2…', 'https://op3…'],
-    threshold: 2,                                         // m-of-n (default ~2/3 of n)
+    threshold: 2,                                         // m-of-n (default ~7/12 of n)
     relays:    ['wss://relay.damus.io', /* … */],         // discovery relays (optional)
+    pinCentral: true,                                     // never redirect to another central (optional)
   },
 });
 ```
 
-- **Opt-in**, off unless configured. When set it takes precedence over the
+- **Opt-in**, off unless you pass `pomegranate`. `pomegranate: true` (or `{}`)
+  uses the **njump ecosystem defaults** — central `auth.njump.me`, operators
+  `po.f7z.io`, `po.coracle.social`, `po.njump.me`, `po.jumble.social` (3-of-4),
+  the same set Jumble and fiatjaf's admin client use — so a user gets the *same*
+  key here as in any other njump-based app. When set it takes precedence over the
   Drive+PIN path so there's never a double "Continue with Google".
-- It needs a running **`central` + `operator` servers** you (or someone) host —
-  see the [handoff/deploy guide](docs/pomegranate-deploy.md). The central is the
-  Google OAuth handler, so mill needs no shim for this path.
+- To run your **own** `central` + `operator` servers instead, pass them
+  explicitly — see the [handoff/deploy guide](docs/pomegranate-deploy.md) and
+  **[Choosing a central](#choosing-a-central-interop-vs-self-hosting)** below. The
+  central is the Google OAuth handler, so mill needs no shim for this path.
 - At signup the user can **generate a fresh key** or **bring their own**
   (import an existing `nsec`/hex) to shard — so an established identity can move
   onto pomegranate, not just a brand-new one. Either way the nsec is shown once
@@ -342,6 +352,47 @@ MILL.open({
 > [cloud-key-backup NIP draft](docs/nip-cloud-key-backup.md)) is removed in 1.7
 > in favour of this — it avoided pomegranate's public-honeypot problem is the
 > reason. The NIP draft is kept for the record.
+
+### Choosing a central: interop vs. self-hosting
+
+The single most important thing to understand: **in pomegranate the *central* is
+the identity anchor, not the email.** Each central+operators deployment holds a
+*different* FROST-sharded key. The Google email is only the auth factor and the
+discovery lookup key. So "same email everywhere → same key" holds **only when
+every client points at the same central**. Two centrals for one email = two
+different npubs; there is no protocol path to merge them, and discovery (a
+`kind:16440` keyed by `argon2id(email)`) only *points*, it can't adjudicate.
+
+That leaves a real choice:
+
+- **Interop (recommended for onboarding).** Use `pomegranate: true` — the
+  `auth.njump.me` ecosystem. Your users get the *same* identity they'd get in
+  Jumble or any other njump-based app. You run nothing and depend on no servers
+  of your own; you also can't recover/replace keys you don't operate.
+- **Self-host (independence).** Run your own `central` + operators and pass them
+  explicitly. You control the infrastructure, but identities under your central
+  are a **separate namespace** — a user who also opens a njump-based app gets a
+  *different* key there. Set `pinCentral: true` so mill never follows discovery
+  to another central (no surprise redirect to njump); the trade-off is you opt
+  out of cross-central discovery entirely.
+
+You can't have both "my own central" and "the same key njump gives me." If you
+want your own infra *and* one stable identity across the ecosystem, the only way
+is **bring-your-own-key into two centrals**: back up the key, then **Import my
+key** at `auth.njump.me` *and* at your own central. Both resolve to the same
+npub, so any client lands on the same identity and you get central failover — at
+the cost of more operators holding shards (a bigger collusion surface) and having
+to rotate on both. This only works for keys you hold; a normie who signs up fresh
+on njump gets njump's generated key, which your central can't adopt unless they
+import it. So for onboarding non-technical users, converging on `auth.njump.me`
+is the least-surprising choice.
+
+> **Discovery needs a shared relay set.** Cross-client discovery only works if
+> every client publishes/queries the same relays *and* actually publishes the
+> `kind:16440`. mill and fiatjaf's client both default to damus/primal/nos.lol/
+> nostr.mom/offchain. If a client publishes elsewhere (or not at all), mill won't
+> find that account and will treat the email as new — a silent way to end up with
+> two keys.
 
 ---
 

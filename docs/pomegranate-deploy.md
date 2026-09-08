@@ -6,6 +6,14 @@ up the **pomegranate infrastructure** it needs. It has two halves:
 - **Part A — Demo page changes** (small; front-end config).
 - **Part B — Stand up `central` + `operator` servers** (the real work; Go daemons).
 
+> **You probably don't need Part B.** As of 1.7, `MILL.open({ pomegranate: true })`
+> uses the shared **njump ecosystem** (central `auth.njump.me`; operators
+> `po.f7z.io`, `po.coracle.social`, `po.njump.me`, `po.jumble.social`; 3-of-4) —
+> the same set Jumble uses, so users get one identity across the ecosystem and you
+> host nothing. Part B is only for running your **own** central+operators (a
+> separate identity namespace — see "Choosing a central" in the README). The
+> oslim.dev demo now just uses `pomegranate: true`.
+
 > **What 1.7 changes for the demo:** the experimental relay-published cross-client
 > backup from 1.6 is **gone**. Cross-client "Continue with Google" is now a client
 > of fiatjaf's **pomegranate** (FROST threshold signing). The 1.6 **Drive+PIN**
@@ -21,28 +29,22 @@ up the **pomegranate infrastructure** it needs. It has two halves:
 
 1. **Bump the mill build** the demo loads to the 1.7 beta once published, e.g.:
    ```html
-   <script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.7.0-beta.0/dist/mill.umd.min.js"></script>
+   <script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.7.0-beta.3/dist/mill.umd.min.js"></script>
    ```
-2. **Configure pomegranate** in the `MILL.open` call (replace the old
-   `backupRelays` / Drive-only config):
+2. **Enable pomegranate** in the `MILL.open` call (replace the old `backupRelays`
+   / Drive-only config). For the shared njump ecosystem — what oslim.dev now uses
+   — that's just:
    ```js
    MILL.open({
      appName: 'oslim.dev',
-     pomegranate: {
-       central:   'https://central.oslim.dev',
-       operators: [
-         'https://op1.oslim.dev',
-         'https://op2.oslim.dev',
-         'https://op3.oslim.dev',
-       ],
-       threshold: 2,                       // 2-of-3
-       // relays: [...]                    // optional; defaults to a public set
-     },
+     pomegranate: true,                    // central auth.njump.me, po.* operators, 3-of-4
      // header/footer/branding as before …
    });
    ```
-   When `pomegranate` is set it becomes the "Continue with Google" method and
-   **takes precedence** over the Drive+PIN path, so there's no double button.
+   To pin your own servers instead, pass `pomegranate: { central, operators,
+   threshold, pinCentral: true }` (see Part B). When `pomegranate` is set it
+   becomes the "Continue with Google" method and **takes precedence** over the
+   Drive+PIN path, so there's no double button.
 3. **Remove** any `backupRelays` option and `backup-relays` attribute — they no
    longer exist in 1.7.
 4. **Leave your 1.6 Drive+PIN shim** (`mill-oauth.html` + its Google client)
@@ -55,8 +57,11 @@ Amber, etc.) is unchanged.
 
 ## Part B — Stand up pomegranate `central` + operators
 
-The source lives at fiatjaf's git (not GitHub): <https://fiatjaf.com/pomegranate>
-(clone via the Go module proxy or ngit). It's Go; each server needs
+The source lives at fiatjaf's git (not GitHub). `fiatjaf.com/pomegranate` is the
+Go **import path**, not a web page (it 404s in a browser). Browse it at
+<https://gitworkshop.dev/npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6/pomegranate>,
+or clone `https://pyramid.fiatjaf.com/npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6/pomegranate.git`
+(also via the Go module proxy or ngit). It's Go; each server needs
 [`templ`](https://github.com/a-h/templ) to generate templates and builds with the
 `libsecp256k1` tag.
 
