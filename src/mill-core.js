@@ -1983,11 +1983,22 @@ function renderPomegranateFlow(host, onDone, onBack) {
   let selectedOperators = operatorChoices.map(url => ({ url, checked: defaultOperators.includes(url) }));
   try {
     const saved = JSON.parse(localStorage.getItem('mill:pomegranate:servers') || 'null');
-    if (saved && saved.central) { selectedCentral = pomMassageURL(saved.central); if (!centralChoices.includes(selectedCentral)) centralChoices.push(selectedCentral); }
-    if (saved && Array.isArray(saved.operators) && saved.operators.length) {
-      const savedOps = saved.operators.map(pomMassageURL);
-      savedOps.forEach(u => { if (!selectedOperators.find(o => o.url === u)) selectedOperators.push({ url: u, checked: false }); });
-      selectedOperators.forEach(o => { o.checked = savedOps.includes(o.url); });
+    if (saved) {
+      let dirty = false;
+      // Only restore servers the host still offers. A stored central/operator that
+      // is no longer in the config (e.g. the host renamed/moved its central) would
+      // otherwise pin returning visitors to a dead host — so drop it and fall back
+      // to the default rather than persisting an arbitrary URL that can rot.
+      if (saved.central) {
+        const c = pomMassageURL(saved.central);
+        if (centralChoices.includes(c)) selectedCentral = c; else dirty = true;
+      }
+      if (Array.isArray(saved.operators)) {
+        const offered = saved.operators.map(pomMassageURL).filter(u => operatorChoices.includes(u));
+        if (offered.length) selectedOperators.forEach(o => { o.checked = offered.includes(o.url); });
+        if (offered.length !== saved.operators.length) dirty = true;
+      }
+      if (dirty) { try { localStorage.setItem('mill:pomegranate:servers', JSON.stringify({ central: selectedCentral, operators: selectedOperators.filter(o => o.checked).map(o => o.url) })); } catch {} }
     }
   } catch {}
   const chosenOperators = () => selectedOperators.filter(o => o.checked).map(o => o.url);
@@ -2009,6 +2020,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
   let signupMeta = null;                // { central, operators, threshold, skipped } for onConnected
   const flowLog = [];                   // technical server responses, shown under a "Details" disclosure
   let logOpen = false;
+  let connectToken = 0;                  // bumped to invalidate a cancelled/superseded connect attempt
   const hostOf = u => String(u || '').replace(/^https?:\/\//, '');
   const logLine = m => { flowLog.push(m); };
   let errMsg = '', statusMsg = '', createdNsec = '', nsecSaved = false;
@@ -2072,12 +2084,17 @@ function renderPomegranateFlow(host, onDone, onBack) {
   }
 
   // Take a pomegranate bunker URI and connect via mill's existing NIP-46 path.
+  // Fails fast (not the 90 s default) with the relay named, so a dead central is
+  // diagnosable, and is cancellable from the connecting screen.
   async function connectBunker(bunkerURI, render) {
+    const myToken = ++connectToken;
+    const relayUrl = decodeURIComponent((String(bunkerURI).match(/[?&]relay=([^&]+)/) || [])[1] || '');
+    logLine(`connecting to signer${relayUrl ? ` via ${relayUrl}` : ''}…`);
     step = 'connecting-signer'; statusMsg = 'Connecting to your signer…'; errMsg = ''; render();
-    logLine('connecting to signer (NIP-46)…');
     try {
       const client = new NIP46Client({ relays: DEFAULT_RELAYS, metadata: { name: appName(), url: location.origin }, debug: false });
-      const userPk = await client.connectViaBunker(bunkerURI, { timeoutMs: 90_000 });
+      const userPk = await client.connectViaBunker(bunkerURI, { timeoutMs: 20_000 });
+      if (myToken !== connectToken) return;   // a Cancel (or newer attempt) superseded this one
       storeBunkerState({
         clientSecretKey: bytesToHex(client.clientSecretKey),
         remotePubkey: client.remotePubkey, relays: client.relays, userPubkey: userPk,
@@ -2087,49 +2104,39 @@ function renderPomegranateFlow(host, onDone, onBack) {
       logLine('signer connected');
       onDone({ method: 'pomegranate', pubkey: userPk, bunkerUrl: bunkerURI, signer, nsec: createdNsec || undefined, pomegranate: signupMeta || { central: selectedCentral } });
     } catch (e) {
+      if (myToken !== connectToken) return;   // cancelled
       logLine(`signer connect failed: ${e.message || e}`);
-      errMsg = 'Couldn’t connect to your signer — see Details.';
+      errMsg = relayUrl
+        ? `Couldn’t reach your signer relay (${relayUrl}). It may be offline — see Details.`
+        : 'Couldn’t connect to your signer — see Details.';
       step = 'idle'; render();
     }
   }
 
-  // Route to the right step once we hold a valid token for `centralURL`. We read
-  // the account with getAccount (not loginExisting — that would create a default
-  // profile before the user commits).
+  // Stop waiting on a connect (the pending attempt is abandoned via connectToken).
+  function cancelConnect(render) {
+    connectToken++; logLine('connection cancelled'); errMsg = ''; statusMsg = ''; step = 'idle'; render();
+  }
+
+  // Route to the right step once we hold a valid token for `centralURL`.
   async function proceedAt(centralURL, token, render) {
     const email = pomTokenEmail(token);
     auth = { centralURL, token, email };
-    const acct = await pomGetAccount(centralURL, token);
     if (intent === 'replace') {
+      // Read the account with getAccount (not loginExisting — that would create a
+      // default profile) so we can erase it cleanly.
+      const acct = await pomGetAccount(centralURL, token);
       backedUp = false; ackReplace = false; nsecVal = '';
       Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
       if (!acct) { account = null; mode = 'import'; step = 'new-account'; render(); return; }
       account = acct; mode = 'import';
       step = 'replace-confirm'; render(); return;
     }
-    // Sign-in: new account → set one up; existing → confirm on the signed-in
-    // screen (the point where we finally know the email/account) before connecting.
-    if (!acct) { mode = 'generate'; nsecVal = ''; step = 'new-account'; render(); return; }
-    account = acct; step = 'signed-in'; render();
-  }
-
-  // Continue from the signed-in screen: resolve the bunker (creating the default
-  // profile now) and connect.
-  async function continueSignedIn(render) {
-    step = 'connecting-signer'; statusMsg = 'Connecting to your signer…'; errMsg = ''; render();
-    try {
-      const existing = await pomLogin(auth.centralURL, auth.token);
-      if (!existing) { errMsg = 'Your account could not be resolved. Try again.'; step = 'signed-in'; render(); return; }
-      await connectBunker(existing.bunkerURI, render);
-    } catch (e) { errMsg = e.message || 'Could not connect to your signer.'; step = 'signed-in'; render(); }
-  }
-
-  // From the signed-in screen: switch to replacing the key (email/account known).
-  function startReplaceFromSignedIn(render) {
-    intent = 'replace'; mode = 'import'; nsecVal = '';
-    backedUp = false; ackReplace = false; errMsg = '';
-    Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
-    step = 'replace-confirm'; render();
+    // Sign-in: existing account → connect straight through (one screen); no account
+    // → set one up. "Use a different key" lives on the Connected screen afterwards.
+    const existing = await pomLogin(centralURL, token);
+    if (existing) { await connectBunker(existing.bunkerURI, render); return; }
+    mode = 'generate'; nsecVal = ''; step = 'new-account'; render();
   }
 
   async function start(render) {
@@ -2383,18 +2390,6 @@ function renderPomegranateFlow(host, onDone, onBack) {
       footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }, blockPrimary));
       container.appendChild(wrap);
 
-    } else if (step === 'signed-in') {
-      const { wrap, body, footer } = flowWrap({ step: 0, total: 1, title: 'Signed In', subtitle: 'Your Google account is linked to this Nostr identity.', onBack: () => { step = 'idle'; render(); } });
-      body.appendChild(badge('success', '✅', 'You’re signed in', 'Continue to start using your account, or swap in a different key.'));
-      body.appendChild(keyDisplay('Your account (npub)', hexToNpub(account.pubkey)));
-      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
-        onClick: () => startReplaceFromSignedIn(render) }, 'Use a different key with this Google account'));
-      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      renderLog(body);
-      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
-      footer.appendChild(btn('Continue', 'primary', () => continueSignedIn(render)));
-      container.appendChild(wrap);
-
     } else if (step === 'found-elsewhere') {
       const foundHost = foundCtx.foundCentral.replace(/^https?:\/\//, '');
       const cfgHost = selectedCentral.replace(/^https?:\/\//, '');
@@ -2478,15 +2473,17 @@ function renderPomegranateFlow(host, onDone, onBack) {
 
     } else if (step === 'connecting' || step === 'creating' || step === 'connecting-signer' || step === 'replacing') {
       const isReplace = step === 'replacing';
+      const isSigner = step === 'connecting-signer';
       const title = step === 'creating' ? 'Creating your account…' : isReplace ? 'Replacing your key…' : 'Connecting…';
       const sub = step === 'creating' ? 'Splitting and distributing your key…'
         : isReplace ? (statusMsg || 'Working…')
-        : step === 'connecting-signer' ? 'Connecting to your signer…'
+        : isSigner ? 'Connecting to your signer…'
         : 'Approve access in the Google window.';
-      const { wrap, body } = flowWrap({ step: isReplace ? 2 : 1, total: isReplace ? 4 : 3, title, subtitle: sub });
+      const { wrap, body, footer } = flowWrap({ step: isReplace ? 2 : 1, total: isReplace ? 4 : 3, title, subtitle: sub });
       const center = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '30px 0' } });
       center.appendChild(spinner()); center.appendChild(h('span', { style: { color: 'var(--mill-text-secondary)' } }, statusMsg || 'One moment…'));
       body.appendChild(center);
+      if (isSigner) { renderLog(body); footer.appendChild(btn('Cancel', 'ghost', () => cancelConnect(render))); }
       container.appendChild(wrap);
 
     } else if (step === 'created') {
@@ -2524,6 +2521,10 @@ function renderPomegranateFlow(host, onDone, onBack) {
     }
   }
   render();
+  // Entered from the Connected screen's "Use a different key": go straight into
+  // the replace flow. Auth runs synchronously here (still inside the user's click),
+  // so the Google popup isn't blocked.
+  if (host._state?.pomegranateReplace) { host._state.pomegranateReplace = false; intent = 'replace'; start(render); }
   return container;
 }
 
@@ -2645,6 +2646,11 @@ function renderConnectedScreen(result, onDisconnect, opts = {}) {
   // never have to think about keys until they choose to.
   if (opts.onShowKeys && loadEncryptedNsec()) {
     wrap.appendChild(btn('Take control of my keys', 'ghost small', opts.onShowKeys));
+  }
+  // Pomegranate: swap the key behind this Google account (email is known now, so
+  // this goes straight into the replace flow — no pre-login popup just to learn it).
+  if (result.method === 'pomegranate' && opts.onReplaceKey) {
+    wrap.appendChild(btn('Use a different key', 'ghost small', opts.onReplaceKey));
   }
   wrap.appendChild(btn('Disconnect & Switch Account', 'ghost small', onDisconnect));
   return wrap;
@@ -3126,6 +3132,9 @@ class NostrSignerElement extends HTMLElement {
         this._render();
       }, {
         onShowKeys: () => { this._state.keyexport = true; this._render(); },
+        // Re-enter the pomegranate flow straight into "replace the key" (auth →
+        // replace-confirm). The flow reconnects on completion.
+        onReplaceKey: () => { this._state.connected = null; this._state.method = 'pomegranate'; this._state.pomegranateReplace = true; this._render(); },
       }));
     } else if (this._state.method) {
       const flowMap = {

@@ -426,10 +426,12 @@ lives inside Advanced, so most people never see it:
   Recover my key from operators                          Reset to defaults
 ```
 
-Returning users (an account already exists for the Google account) land on a
-**Signed In** screen showing their npub, with **Continue** and **Use a different
-key** — so replacing the key happens *after* Google links the account (when the
-email is finally known), not on the pre-login screen.
+Returning users (an account already exists for the Google account) connect in a
+single step — Continue with Google goes straight to the **Connected** screen, no
+extra gate. Swapping the key is offered there: the Connected screen carries a
+quiet **Use a different key** action (alongside "Disconnect & Switch Account")
+that jumps into the replace flow — replacing happens *after* Google links the
+account, never as a pre-login link that would fire a popup just to learn the email.
 
 - Status dots come from a 3 s CORS health probe when Advanced opens (and on Add):
   green = responding, red = not responding. Informational only.
