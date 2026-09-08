@@ -40,10 +40,10 @@ import { requestCloudToken } from './oauth.js';
 import { encryptCloudBlob, decryptCloudBlob, exportNcryptsec } from './cloudkey.js';
 import { listBackups, downloadBackup, uploadBackup, deleteBackup, withAuth } from './drive.js';
 import {
-  deriveBackupIdentity, generateRecoveryPhrase, passphraseOk,
-  encryptBackupPayload, decryptBackupPayload, buildBackupEvent, nextCounter,
-  publishBackup, fetchBackup,
-} from './nipbackup.js';
+  authenticate as pomAuthenticate, tokenEmail as pomTokenEmail, discover as pomDiscover,
+  loginExisting as pomLogin, signup as pomSignup, requestOperatorShard, reconstructFromShards,
+  massageURL as pomMassageURL,
+} from './pomegranate.js';
 
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
@@ -69,6 +69,9 @@ const RESTORE_METHOD_ALIASES = {
   // Google login builds a private-key signer from the cloud-recovered key;
   // after a reload the sessionStorage blob restores it exactly like privatekey.
   google:            'privatekey',
+  // Pomegranate connects a NIP-46 bunker; restore rebuilds it from stored
+  // bunker state exactly like a remote signer.
+  pomegranate:       'nip46',
 };
 
 // These choose whether a category is PRE-APPROVED, not when a password is
@@ -90,10 +93,12 @@ const METHOD_META = {
   nip55:      { label: 'Android Signer',    icon: '📱',  color: 'var(--mill-teal)'    },
   newkey:     { label: 'New Identity',      icon: '✨',  color: 'var(--mill-success)' },
   google:     { label: 'Google',            icon: googleLogo, color: 'var(--mill-accent)' },
+  pomegranate:{ label: 'Google',            icon: googleLogo, color: 'var(--mill-accent)' },
 };
 
 const METHODS_LIST = [
   { id: 'google',     label: 'Google',             sub: 'Cloud login',   icon: googleLogo, secLabel: 'Easiest', secColor: 'var(--mill-success)' },
+  { id: 'pomegranate',label: 'Google',             sub: 'Secure login',  icon: googleLogo, secLabel: 'Easiest', secColor: 'var(--mill-success)' },
   { id: 'nip07',      label: 'Browser Extension', sub: 'NIP-07',        icon: '🧩', secLabel: 'Recommended',  secColor: 'var(--mill-success)' },
   { id: 'nip46',      label: 'Remote Signer',     sub: 'NIP-46 Bunker', icon: '📡', secLabel: 'High security', secColor: 'var(--mill-teal)'    },
   { id: 'nip55',      label: 'Android Signer',    sub: 'NIP-55 · Amber',icon: '📱', secLabel: 'Android only',  secColor: 'var(--mill-warning)'    },
@@ -886,7 +891,13 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   // it appears in the default picker only when configured. An explicit methods:
   // list still shows it if asked (clicking without a shim shows a clear
   // "not configured" screen rather than failing silently).
-  const googleAvailable = !!host?.getAttribute?.('oauth-shim');
+  // Two Google paths, each opt-in via config: pomegranate (FROST, cross-client)
+  // when a central+operators are configured, and Drive+PIN (per-app) when an
+  // oauth-shim is set. Pomegranate takes precedence so there's never a double
+  // "Continue with Google". A "Google" affordance is available if either is set.
+  const pomegranateAvailable = !!(host?._state?.pomegranate?.central);
+  const drivePinAvailable    = !!host?.getAttribute?.('oauth-shim');
+  const googleAvailable      = pomegranateAvailable || drivePinAvailable;
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
   const resolved = explicit
     ? methodFilter.map(entry => {
@@ -897,7 +908,8 @@ function renderMethodSelection(host, onSelect, opts = {}) {
       }).filter(Boolean)
     : METHODS_LIST.filter(m => {
         if (DEFAULT_HIDDEN_METHODS.has(m.id)) return false;
-        if (m.id === 'google') return googleAvailable;
+        if (m.id === 'pomegranate') return pomegranateAvailable;
+        if (m.id === 'google')      return drivePinAvailable && !pomegranateAvailable;
         return true;
       });
 
@@ -1639,9 +1651,11 @@ function renderNewHereChooser(host, onSelect, onBack) {
     return card;
   };
 
+  // Route to whichever Google path the host configured (pomegranate wins).
+  const googleMethod = host?._state?.pomegranate?.central ? 'pomegranate' : 'google';
   body.appendChild(option(googleLogo, 'Continue with Google',
     'Easiest. Your key is created and safely stored for you — nothing to write down.',
-    true, () => onSelect('google')));
+    true, () => onSelect(googleMethod)));
   body.appendChild(option('🔑', 'Generate my own keys',
     'Advanced. You get your private key immediately and are responsible for backing it up.',
     false, () => onSelect('newkey')));
@@ -1658,28 +1672,15 @@ function renderNewHereChooser(host, onSelect, onBack) {
 // key becomes visible — hidden until asked for.
 function renderGoogleFlow(host, onDone, onBack) {
   const shimUrl = host.getAttribute?.('oauth-shim') || '';
-  // Cross-app recovery (the cloud-backup NIP) is opt-in: the host must point at
-  // relays that accept these backups (see the spec — generic relays reject
-  // graphless pubkeys). Empty → the feature is hidden entirely.
-  const backupRelays = (host.getAttribute?.('backup-relays') || '').split(',').map(s => s.trim()).filter(Boolean);
   let step = shimUrl ? 'idle' : 'unconfigured';
   let errMsg = '', pin = '', pin2 = '';
   let mode = 'generate';         // 'generate' | 'import' — bring-your-own-key
   let nsecVal = '';              // pasted key when mode === 'import'
   let token = null;               // { accessToken, sub, ... }
   let backups = [];              // Drive file list
-  let recovering = false;        // true when the entry point was "recover from another app"
-  let phrase = '';               // generated recovery phrase (enable path)
-  let phraseIn = '';             // pasted recovery phrase (recover path)
-  let pending = null;            // { privHex, npub, pubHex } awaiting the recovery offer
-  let phraseSaved = false;
   let confirmRemove = null;      // file id pending a remove confirmation (manage screen)
   let unlockMatches = [];        // accounts that decrypted with the entered PIN (chooser)
   const container = h('div', {});
-
-  // cross-app recovery needs the account's stable `sub`; only available if the
-  // shim returned it (openid scope). If missing, we degrade gracefully.
-  const canRecover = () => backupRelays.length > 0 && !!token?.sub;
 
   // Drive ops need a token getter; a forced refresh re-opens the popup, since a
   // GIS access token can't be refreshed silently from here.
@@ -1693,32 +1694,12 @@ function renderGoogleFlow(host, onDone, onBack) {
     step = 'connecting'; errMsg = ''; render();
     try {
       await getToken(false);
-      if (recovering) {                       // "recover from another app" entry
-        if (!token?.sub) { errMsg = 'This sign-in did not return an account id. Update the OAuth page to request the openid scope.'; step = 'idle'; recovering = false; render(); return; }
-        step = 'recover-enter'; render(); return;
-      }
       backups = await withAuth(getToken, t => listBackups(t));
       step = backups.length ? 'unlock' : 'setup';
       render();
     } catch (e) {
       errMsg = e.message || 'Could not connect to Google.';
-      step = 'idle'; recovering = false; render();
-    }
-  }
-
-  // ── Cross-app recovery (NIP) ────────────────────────────────────────────────
-  async function publishRecovery(render) {
-    step = 'working'; errMsg = ''; render();
-    try {
-      const { seckey } = deriveBackupIdentity('google', token.sub, phrase);
-      const payload = encryptBackupPayload(pending.privHex, phrase);
-      const ev = buildBackupEvent({ backupSeckey: seckey, payload, label: 'primary', n: 1, createdAt: Math.floor(Date.now() / 1000) });
-      const res = await publishBackup(backupRelays, ev);
-      if (!res.ok) { errMsg = 'Could not reach any backup relay. Your account still works — cross-app recovery was not enabled. You can retry later.'; step = 'show-recovery'; render(); return; }
-      await finish(pending.privHex, pending.npub, pending.pubHex);
-    } catch (e) {
-      errMsg = e.message || 'Could not enable cross-app recovery.';
-      step = 'show-recovery'; render();
+      step = 'idle'; render();
     }
   }
 
@@ -1739,24 +1720,6 @@ function renderGoogleFlow(host, onDone, onBack) {
     } catch (e) {
       errMsg = e.message || 'Could not remove that backup.';
       step = 'manage'; render();
-    }
-  }
-
-  async function doRecover(render) {
-    step = 'working'; errMsg = ''; render();
-    try {
-      const p = phraseIn.trim().replace(/\s+/g, ' ');
-      const { pubkey } = deriveBackupIdentity('google', token.sub, p);
-      const { event, reached, total } = await fetchBackup(backupRelays, { pubkey, label: 'primary' });
-      if (reached < Math.ceil(total / 2)) { errMsg = 'Could not reach the backup relays. Check your connection and try again.'; step = 'recover-enter'; render(); return; }
-      if (!event) { errMsg = 'No backup found for that recovery phrase. Check the words and spacing, then try again.'; step = 'recover-enter'; render(); return; }
-      const privHex = decryptBackupPayload(event.content, p);
-      const pubHex = getPublicKey(hexToBytes(privHex));
-      pin = p;                                // recovered session is unlocked by the phrase
-      await finish(privHex, hexToNpub(pubHex), pubHex);
-    } catch (e) {
-      errMsg = 'Could not recover with that phrase. Double-check the words.';
-      step = 'recover-enter'; render();
     }
   }
 
@@ -1823,10 +1786,7 @@ function renderGoogleFlow(host, onDone, onBack) {
       }
       const blob = await encryptCloudBlob(privHex, pin);
       await withAuth(getToken, t => uploadBackup(t, blob));
-      // Offer cross-app recovery only if the host configured it and we have a
-      // sub; otherwise finish straight away.
-      if (canRecover()) { pending = { privHex, npub, pubHex }; step = 'offer-recovery'; render(); }
-      else { await finish(privHex, npub, pubHex); }
+      await finish(privHex, npub, pubHex);
     } catch (e) {
       errMsg = e.message || 'Could not save your account to Google.';
       step = 'setup'; render();
@@ -1859,45 +1819,8 @@ function renderGoogleFlow(host, onDone, onBack) {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Create or restore your account. Your key is encrypted and stored in your own Google Drive — the app never sees it.', onBack });
       body.appendChild(badge('info', '🔒', 'How this works', 'A new Nostr key is created for you — or your existing one is restored, or you can import your own. It is encrypted with a PIN and saved to a private folder in your Google Drive that only this sign-in can read.'));
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      // Entry point for a user whose key was backed up by another app.
-      if (backupRelays.length) {
-        body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
-          onClick: () => { recovering = true; connect(render); } }, 'Recover an account from another app'));
-      }
       footer.appendChild(btn('Back', 'ghost', onBack));
-      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { recovering = false; connect(render); }));
-      container.appendChild(wrap);
-
-    } else if (step === 'offer-recovery') {
-      const { wrap, body, footer } = flowWrap({ step: 3, total: 3, title: 'Use this account in other apps?', subtitle: 'Optional. Create a recovery phrase so you can sign in to other Nostr apps with this same Google account.', onBack: () => finish(pending.privHex, pending.npub, pending.pubHex) });
-      body.appendChild(badge('info', '🔗', 'Cross-app recovery (experimental)', 'This publishes an encrypted copy of your key, protected by a recovery phrase, so other apps can restore it. It is separate from the Google-only login you just set up. You will need to write the phrase down.'));
-      body.appendChild(badge('warning', '⚠️', 'Experimental', 'This uses a draft standard that may change. Keep your own copy of your key regardless (see “Take control of my keys” after signing in).'));
-      footer.appendChild(btn('Skip', 'ghost', () => finish(pending.privHex, pending.npub, pending.pubHex)));
-      footer.appendChild(btn('Create recovery phrase', 'primary', () => { phrase = generateRecoveryPhrase(); phraseSaved = false; step = 'show-recovery'; render(); }));
-      container.appendChild(wrap);
-
-    } else if (step === 'show-recovery') {
-      const { wrap, body, footer } = flowWrap({ step: 3, total: 3, title: 'Your Recovery Phrase', subtitle: 'Write these words down in order and keep them private. You will need them (plus this Google account) to recover in another app.', onBack: () => { step = 'offer-recovery'; render(); } });
-      body.appendChild(keyDisplay('Recovery Phrase', phrase, true));
-      body.appendChild(badge('danger', '🔴', 'This is a password to your key', 'Anyone who has this phrase AND access to your Google account can take over your identity. Never share it or type it into an app you do not trust.'));
-      const chk = h('div', { class: `mill-check-item${phraseSaved ? ' checked' : ''}`, onClick: () => { phraseSaved = !phraseSaved; render(); } });
-      chk.appendChild(h('div', { class: 'mill-check-box' }, phraseSaved ? '✓' : ''));
-      chk.appendChild(h('span', { style: { fontSize: '13.5px', lineHeight: '1.55', color: 'var(--mill-text-secondary)' } }, 'I have written down my recovery phrase and stored it safely.'));
-      body.appendChild(chk);
-      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      footer.appendChild(btn('Back', 'ghost', () => { step = 'offer-recovery'; render(); }));
-      footer.appendChild(btn('Enable & Continue', 'primary', () => publishRecovery(render), !phraseSaved));
-      container.appendChild(wrap);
-
-    } else if (step === 'recover-enter') {
-      const okp = () => passphraseOk(phraseIn.trim().replace(/\s+/g, ' '));
-      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Recover Your Account', subtitle: 'Enter the recovery phrase you saved when you first set up cross-app recovery.', onBack: () => { step = 'idle'; recovering = false; phraseIn = ''; render(); } });
-      const recBtn = btn('Recover', 'primary', () => doRecover(render), !okp());
-      const { wrap: fw } = field('Recovery Phrase', 'the words you wrote down', phraseIn, v => { phraseIn = v; errMsg = ''; recBtn.disabled = !okp(); }, { rows: 2, mono: true });
-      body.appendChild(fw);
-      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; recovering = false; phraseIn = ''; render(); }));
-      footer.appendChild(recBtn);
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => connect(render)));
       container.appendChild(wrap);
 
     } else if (step === 'connecting') {
@@ -2009,6 +1932,144 @@ function renderGoogleFlow(host, onDone, onBack) {
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
       footer.appendChild(btn('Back', 'ghost', () => { step = backups.length ? 'unlock' : 'idle'; pin = ''; pin2 = ''; nsecVal = ''; render(); }));
       footer.appendChild(okBtn);
+      container.appendChild(wrap);
+    }
+  }
+  render();
+  return container;
+}
+
+// ── Flow: Continue with Google (Pomegranate / FROST) ──────────────────────────
+// The cross-client Google path (fiatjaf's pomegranate). The key is FROST-sharded
+// across operators and never stored whole; Google authenticates the user to
+// those operators; signing runs over NIP-46 through a `central` coordinator.
+// Config (MILL.open({ pomegranate: { central, operators, threshold, relays } }))
+// lives on host._state.pomegranate. EXPERIMENTAL — needs a running central+ops.
+function renderPomegranateFlow(host, onDone, onBack) {
+  const cfg = host._state?.pomegranate || {};
+  const central = cfg.central ? pomMassageURL(cfg.central) : '';
+  const operators = (cfg.operators || []).map(pomMassageURL);
+  const threshold = cfg.threshold || Math.max(1, Math.ceil((operators.length * 2) / 3)); // default ~2/3
+  const relays = cfg.relays;
+
+  let step = central && operators.length ? 'idle' : 'unconfigured';
+  let errMsg = '', statusMsg = '', createdNsec = '', nsecSaved = false;
+  let recovered = null;                 // { privHex, nsec, npub } from recovery
+  const shards = {};                    // operatorURL -> shard hex (recovery)
+  const container = h('div', {});
+  const appName = () => host.getAttribute?.('app-name') || document.title || 'Nostr App';
+
+  // Take a pomegranate bunker URI and connect via mill's existing NIP-46 path.
+  async function connectBunker(bunkerURI, render) {
+    step = 'connecting-signer'; statusMsg = 'Connecting to your signer…'; errMsg = ''; render();
+    try {
+      const client = new NIP46Client({ relays: DEFAULT_RELAYS, metadata: { name: appName(), url: location.origin }, debug: false });
+      const userPk = await client.connectViaBunker(bunkerURI, { timeoutMs: 90_000 });
+      storeBunkerState({
+        clientSecretKey: bytesToHex(client.clientSecretKey),
+        remotePubkey: client.remotePubkey, relays: client.relays, userPubkey: userPk,
+      });
+      const signer = createNIP46Signer(client, userPk);
+      onDone({ method: 'pomegranate', pubkey: userPk, bunkerUrl: bunkerURI, signer, nsec: createdNsec || undefined });
+    } catch (e) {
+      errMsg = e.message || 'Could not connect to your signer.';
+      step = 'idle'; render();
+    }
+  }
+
+  async function start(render) {
+    step = 'connecting'; errMsg = ''; render();
+    try {
+      let activeCentral = central;
+      let token = await pomAuthenticate(activeCentral);
+      const email = pomTokenEmail(token);
+      // Cross-client discovery: has this Google account set up elsewhere?
+      const found = await pomDiscover(email, relays);
+      if (found && found.centralURL !== activeCentral) {
+        activeCentral = found.centralURL;
+        token = await pomAuthenticate(activeCentral);   // re-auth at the discovered central
+      }
+      const existing = await pomLogin(activeCentral, token);
+      if (existing) { await connectBunker(existing.bunkerURI, render); return; }
+      // No account yet → create one.
+      step = 'creating'; statusMsg = 'Creating your account…'; render();
+      const res = await pomSignup({ centralURL: activeCentral, token, email, operators, threshold, relays });
+      createdNsec = res.nsec; nsecSaved = false;
+      step = 'created'; render();       // show the nsec once, then connect
+      window.__pomBunker = res.bunkerURI;   // stash for the created-screen Continue
+    } catch (e) {
+      errMsg = e.message || 'Google sign-in failed.';
+      step = 'idle'; render();
+    }
+  }
+
+  async function addShard(operatorURL, render) {
+    errMsg = ''; render();
+    try {
+      shards[operatorURL] = await requestOperatorShard(operatorURL);
+      if (Object.keys(shards).length >= threshold) {
+        recovered = reconstructFromShards(Object.values(shards));
+        step = 'recovered'; render();
+      } else { render(); }
+    } catch (e) { errMsg = e.message || 'Could not recover that shard.'; render(); }
+  }
+
+  function render() {
+    container.innerHTML = '';
+
+    if (step === 'unconfigured') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 1, title: 'Google Sign-In Unavailable', subtitle: 'This app has not finished setting up Google sign-in.', onBack });
+      body.appendChild(badge('warning', '🔧', 'Not configured', 'The developer needs to configure a pomegranate central server and operators to enable “Continue with Google”. Use another method for now.'));
+      footer.appendChild(btn('Back', 'primary', onBack));
+      container.appendChild(wrap);
+
+    } else if (step === 'idle') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Sign in with Google. Your key is split across independent servers and never stored in one place — no app, including this one, ever holds it whole.', onBack });
+      body.appendChild(badge('info', '🔒', 'How this works', 'A Nostr key is created for you and split into encrypted shares across several operators (a threshold is needed to sign). Google is only used to prove it’s you. Signing happens remotely — the full key is never reassembled.'));
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
+        onClick: () => { step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
+      footer.appendChild(btn('Back', 'ghost', onBack));
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => start(render)));
+      container.appendChild(wrap);
+
+    } else if (step === 'connecting' || step === 'creating' || step === 'connecting-signer') {
+      const sub = step === 'creating' ? 'Splitting and distributing your key…' : step === 'connecting-signer' ? 'Connecting to your signer…' : 'Approve access in the Google window.';
+      const { wrap, body } = flowWrap({ step: 1, total: 3, title: step === 'creating' ? 'Creating your account…' : 'Connecting…', subtitle: sub });
+      const center = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '30px 0' } });
+      center.appendChild(spinner()); center.appendChild(h('span', { style: { color: 'var(--mill-text-secondary)' } }, statusMsg || 'One moment…'));
+      body.appendChild(center);
+      container.appendChild(wrap);
+
+    } else if (step === 'created') {
+      const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Account Created', subtitle: 'Your account is ready. Optionally save your key before continuing — it is otherwise held only as shares across the operators.', onBack: () => { step = 'idle'; render(); } });
+      body.appendChild(badge('success', '🎉', 'You’re set up', 'You can sign in from any compatible app with this Google account.'));
+      body.appendChild(keyDisplay('Private Key (nsec) — optional backup, keep secret', createdNsec, true));
+      body.appendChild(badge('muted', '💾', null, 'Saving this is optional — you can recover later with Google as long as the operators are online. But keeping your own copy means you never depend on them.'));
+      footer.appendChild(btn('Continue', 'primary', () => connectBunker(window.__pomBunker, render)));
+      container.appendChild(wrap);
+
+    } else if (step === 'recover') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Recover Your Key', subtitle: 'Sign in with Google at each operator to collect your key shares. Once enough are collected, your key is reassembled here, in your browser.', onBack: () => { step = 'idle'; render(); } });
+      body.appendChild(h('div', { class: 'mill-hint' }, `Collected ${Object.keys(shards).length} of ${threshold} needed.`));
+      operators.forEach(op => {
+        const have = !!shards[op];
+        const row = h('div', { class: 'mill-grant-row' });
+        row.appendChild(h('div', { class: 'mill-grant-left' }, h('div', { class: 'mill-grant-kind' }, `${have ? '✅' : '⏳'} ${op.replace(/^https?:\/\//, '')}`)));
+        row.appendChild(h('div', { class: 'mill-grant-actions' },
+          btn(have ? 'Got it' : 'Recover', 'ghost', () => { if (!have) addShard(op, render); })));
+        body.appendChild(row);
+      });
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
+      container.appendChild(wrap);
+
+    } else if (step === 'recovered') {
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 2, title: 'Key Recovered', subtitle: 'Your key has been reassembled. Save it somewhere only you control.', onBack: () => { step = 'recover'; render(); } });
+      body.appendChild(keyDisplay('Private Key (nsec) — KEEP SECRET', recovered.nsec, true));
+      body.appendChild(keyDisplay('Public Key (npub)', recovered.npub));
+      body.appendChild(badge('warning', '🔑', 'This is your full key', 'Store it in a password manager or offline. Anyone with it controls your account.'));
+      footer.appendChild(btn('Done', 'primary', () => { step = 'idle'; render(); }));
       container.appendChild(wrap);
     }
   }
@@ -2465,6 +2526,7 @@ class NostrSignerElement extends HTMLElement {
     this._state.footer       = opts.footer;             // { text?, links?, attribution?, attributionHref? }
     this._state.header       = opts.header;             // { logo?, logoHeight?, title?, message?, align?, label? }
     this._state.tip          = 'tip' in opts ? opts.tip : undefined;   // string | false | undefined
+    this._state.pomegranate  = opts.pomegranate;        // { central, operators[], threshold?, relays? }
     this._state.open      = true;
     this._state.method    = null;
     this._state.connected = null;
@@ -2624,6 +2686,7 @@ class NostrSignerElement extends HTMLElement {
         nip55:      () => renderNIP55Flow(this, onDone, onBack),
         newkey:     () => renderNewKeypairFlow(this, onDone, onBack),
         google:     () => renderGoogleFlow(this, onDone, onBack),
+        pomegranate:() => renderPomegranateFlow(this, onDone, onBack),
         _newhere:   () => renderNewHereChooser(this, id => { this._state.method = id; this._render(); }, onBack),
       };
       const flowFn = flowMap[this._state.method];
@@ -2679,9 +2742,9 @@ const MILL = {
     // (which read attributes off the host element) pick them up.
     if (opts.appName) el.setAttribute('app-name', opts.appName);
     if (opts.amberCallback) el.setAttribute('amber-callback', opts.amberCallback);
-    if (opts.oauthShim) el.setAttribute('oauth-shim', opts.oauthShim);
-    if (opts.backupRelays) el.setAttribute('backup-relays', Array.isArray(opts.backupRelays) ? opts.backupRelays.join(',') : opts.backupRelays);
-    el.open(opts);
+    // Set/clear per-open so a reconfigured open() doesn't inherit stale config.
+    if (opts.oauthShim) el.setAttribute('oauth-shim', opts.oauthShim); else el.removeAttribute('oauth-shim');
+    el.open(opts);   // pomegranate config travels on _state (set in el.open)
     return el;
   },
 
