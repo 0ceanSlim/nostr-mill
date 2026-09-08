@@ -1955,6 +1955,9 @@ function renderPomegranateFlow(host, onDone, onBack) {
   let step = central && operators.length ? 'idle' : 'unconfigured';
   let errMsg = '', statusMsg = '', createdNsec = '', nsecSaved = false;
   let recovered = null;                 // { privHex, nsec, npub } from recovery
+  let auth = null;                      // { centralURL, token, email } after Google login, before account creation
+  let mode = 'generate';               // 'generate' | 'import' — bring-your-own-key at signup
+  let nsecVal = '';                    // pasted key when mode === 'import'
   const shards = {};                    // operatorURL -> shard hex (recovery)
   const container = h('div', {});
   const appName = () => host.getAttribute?.('app-name') || document.title || 'Nostr App';
@@ -1991,15 +1994,27 @@ function renderPomegranateFlow(host, onDone, onBack) {
       }
       const existing = await pomLogin(activeCentral, token);
       if (existing) { await connectBunker(existing.bunkerURI, render); return; }
-      // No account yet → create one.
-      step = 'creating'; statusMsg = 'Creating your account…'; render();
-      const res = await pomSignup({ centralURL: activeCentral, token, email, operators, threshold, relays });
-      createdNsec = res.nsec; nsecSaved = false;
-      step = 'created'; render();       // show the nsec once, then connect
-      window.__pomBunker = res.bunkerURI;   // stash for the created-screen Continue
+      // No account yet → let the user generate a fresh key or import their own.
+      auth = { centralURL: activeCentral, token, email };
+      mode = 'generate'; nsecVal = '';
+      step = 'new-account'; render();
     } catch (e) {
       errMsg = e.message || 'Google sign-in failed.';
       step = 'idle'; render();
+    }
+  }
+
+  async function doSignup(render) {
+    step = 'creating'; statusMsg = 'Creating your account…'; errMsg = ''; render();
+    try {
+      const secretKey = mode === 'import' ? hexToBytes(nsecToHex(nsecVal.trim())) : undefined;
+      const res = await pomSignup({ centralURL: auth.centralURL, token: auth.token, email: auth.email, operators, threshold, secretKey, relays });
+      createdNsec = res.nsec; nsecSaved = false;
+      window.__pomBunker = res.bunkerURI;
+      step = 'created'; render();
+    } catch (e) {
+      errMsg = e.message || 'Could not create your account.';
+      step = 'new-account'; render();
     }
   }
 
@@ -2031,6 +2046,29 @@ function renderPomegranateFlow(host, onDone, onBack) {
         onClick: () => { step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
       footer.appendChild(btn('Back', 'ghost', onBack));
       footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => start(render)));
+      container.appendChild(wrap);
+
+    } else if (step === 'new-account') {
+      const importing = mode === 'import';
+      const keyOk = () => !importing || isValidNsec(nsecVal.trim());
+      const goBtn = btn(importing ? 'Import & Shard' : 'Create Account', 'primary', () => { if (keyOk()) doSignup(render); }, !keyOk());
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 3, title: 'Set Up Your Account', subtitle: 'Create a fresh key, or bring your own to shard across the operators.', onBack: () => { step = 'idle'; render(); } });
+      // Toggle: generate vs import
+      const seg = h('div', { style: { display: 'flex', gap: '4px', background: 'var(--mill-inset)', border: '1px solid var(--mill-border)', borderRadius: '10px', padding: '4px', marginBottom: '4px' } });
+      const segBtn = (id, label) => h('button', { class: 'mill-btn', style: { flex: '1', padding: '8px', fontSize: '12.5px', background: mode === id ? 'var(--mill-accent-dim)' : 'transparent', color: mode === id ? 'var(--mill-accent)' : 'var(--mill-muted)', border: mode === id ? '1px solid var(--mill-accent)' : '1px solid transparent' }, onClick: () => { mode = id; errMsg = ''; render(); } }, label);
+      seg.appendChild(segBtn('generate', 'Create new key'));
+      seg.appendChild(segBtn('import', 'Import my key'));
+      body.appendChild(seg);
+      if (importing) {
+        const { wrap: fw } = field('Private Key (nsec or hex)', 'nsec1… or 64-char hex', nsecVal, v => { nsecVal = v; errMsg = ''; goBtn.disabled = !keyOk(); }, { mono: true });
+        body.appendChild(fw);
+        body.appendChild(badge('warning', '⚠️', 'Sharding an existing identity', 'Your key will be split into shares and sent to the operators. They become semi-custodians of THIS identity — any threshold of them could rebuild it. Only do this with operators you trust, and keep your own backup of the key.'));
+      } else {
+        body.appendChild(badge('info', '🎲', 'Fresh key', 'A brand-new key is generated in your browser, sharded, and distributed. You never have to write anything down (though you can back it up on the next screen).'));
+      }
+      if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'idle'; render(); }));
+      footer.appendChild(goBtn);
       container.appendChild(wrap);
 
     } else if (step === 'connecting' || step === 'creating' || step === 'connecting-signer') {
