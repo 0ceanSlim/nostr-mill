@@ -1976,6 +1976,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
   let returnTo = '';                    // where the recover step's Done returns (e.g. 'replace-confirm')
   let backedUp = false;                 // set once the user backs up the old key during a replace
   let ackReplace = false;               // "I understand my key will be erased" checkbox
+  let foundCtx = null;                   // { token, email, foundCentral } when discovery points elsewhere
   const eraseRequested = {};            // operatorURL -> true once its erase popup has opened+closed
   const shards = {};                    // operatorURL -> shard hex (recovery)
   const container = h('div', {});
@@ -2024,39 +2025,72 @@ function renderPomegranateFlow(host, onDone, onBack) {
     }
   }
 
+  // Route to the right step once we hold a valid token for `centralURL`.
+  async function proceedAt(centralURL, token, render) {
+    const email = pomTokenEmail(token);
+    if (intent === 'replace') {
+      // Read the account WITHOUT loginExisting (which would create a default
+      // profile) so we can erase it cleanly.
+      const acct = await pomGetAccount(centralURL, token);
+      auth = { centralURL, token, email };
+      backedUp = false; ackReplace = false; nsecVal = '';
+      Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
+      if (!acct) { account = null; mode = 'import'; step = 'new-account'; render(); return; }
+      account = acct; mode = 'import';
+      step = 'replace-confirm'; render(); return;
+    }
+    const existing = await pomLogin(centralURL, token);
+    if (existing) { await connectBunker(existing.bunkerURI, render); return; }
+    // No account yet → let the user generate a fresh key or import their own.
+    auth = { centralURL, token, email };
+    mode = 'generate'; nsecVal = '';
+    step = 'new-account'; render();
+  }
+
   async function start(render) {
     step = 'connecting'; errMsg = ''; render();
     try {
-      let activeCentral = central;
-      let token = await pomAuthenticate(activeCentral);
+      const token = await pomAuthenticate(central);   // popup opens inside the click
       const email = pomTokenEmail(token);
-      // Cross-client discovery: has this Google account set up elsewhere? Skipped
-      // when pinned, so a self-hosted central is never redirected to another.
+      // Cross-client discovery: is this account set up at a DIFFERENT central?
+      // Skipped when pinned. If so, do NOT auto-open a second popup — the click's
+      // transient activation is already spent and Chrome blocks it. Show an
+      // interstitial whose button re-auths inside a fresh user gesture.
       const found = pinCentral ? null : await pomDiscover(email, relays);
-      if (found && found.centralURL !== activeCentral) {
-        activeCentral = found.centralURL;
-        token = await pomAuthenticate(activeCentral);   // re-auth at the discovered central
+      if (found && found.centralURL !== central) {
+        foundCtx = { token, email, foundCentral: found.centralURL };
+        step = 'found-elsewhere'; render(); return;
       }
-      if (intent === 'replace') {
-        // Read the account WITHOUT loginExisting (which would create a default
-        // profile) so we can erase it cleanly.
-        const acct = await pomGetAccount(activeCentral, token);
-        auth = { centralURL: activeCentral, token, email };
-        backedUp = false; ackReplace = false; nsecVal = '';
-        Object.keys(eraseRequested).forEach(k => delete eraseRequested[k]);
-        if (!acct) { account = null; mode = 'import'; step = 'new-account'; render(); return; }
-        account = acct; mode = 'import';
-        step = 'replace-confirm'; render(); return;
-      }
-      const existing = await pomLogin(activeCentral, token);
-      if (existing) { await connectBunker(existing.bunkerURI, render); return; }
-      // No account yet → let the user generate a fresh key or import their own.
-      auth = { centralURL: activeCentral, token, email };
-      mode = 'generate'; nsecVal = '';
-      step = 'new-account'; render();
+      await proceedAt(central, token, render);
     } catch (e) {
       errMsg = e.message || 'Google sign-in failed.';
       step = 'idle'; render();
+    }
+  }
+
+  // Interstitial: "Continue there" (sign-in) / "Replace the key there" (replace).
+  // Re-auth at the discovered central inside this fresh click, then route.
+  async function continueThere(render) {
+    step = 'connecting'; errMsg = ''; render();
+    try {
+      const token = await pomAuthenticate(foundCtx.foundCentral);
+      await proceedAt(foundCtx.foundCentral, token, render);
+    } catch (e) {
+      errMsg = e.message || 'Google sign-in failed.';
+      step = 'found-elsewhere'; render();
+    }
+  }
+
+  // Interstitial (replace only): ignore the discovered central and import at the
+  // CONFIGURED one. signup() then publishes a fresh announcement that outranks the
+  // old pointer, so future discovery resolves here. Reuses start()'s token.
+  async function importHere(render) {
+    step = 'connecting'; errMsg = ''; render();
+    try {
+      await proceedAt(central, foundCtx.token, render);
+    } catch (e) {
+      errMsg = e.message || 'Sign-in failed.';
+      step = 'found-elsewhere'; render();
     }
   }
 
@@ -2146,6 +2180,25 @@ function renderPomegranateFlow(host, onDone, onBack) {
         onClick: () => { intent = 'replace'; errMsg = ''; start(render); } }, 'Use a different key with this Google account'));
       footer.appendChild(btn('Back', 'ghost', onBack));
       footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }));
+      container.appendChild(wrap);
+
+    } else if (step === 'found-elsewhere') {
+      const foundHost = foundCtx.foundCentral.replace(/^https?:\/\//, '');
+      const cfgHost = central.replace(/^https?:\/\//, '');
+      const isReplace = intent === 'replace';
+      const { wrap, body, footer } = flowWrap({ step: 0, total: isReplace ? 4 : 3, title: 'Account Found Elsewhere', subtitle: `This Google account already has a Nostr identity at ${foundHost}.`, onBack: () => { step = 'idle'; render(); } });
+      if (isReplace) {
+        body.appendChild(badge('info', '🔀', 'Where should your key live?', `Your account is at ${foundHost}. You can replace the key there, or import it here at ${cfgHost} — which creates the account here and makes this the identity other clients discover from now on.`));
+        body.appendChild(btn(`Replace the key at ${foundHost}`, 'ghost', () => continueThere(render)));
+        if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+        footer.appendChild(btn('Cancel', 'ghost', () => { step = 'idle'; render(); }));
+        footer.appendChild(btn(`Import here (${cfgHost})`, 'primary', () => importHere(render)));
+      } else {
+        body.appendChild(badge('info', '🔎', 'Use your existing account', `Sign in at ${foundHost} to use the identity you already have there. Signing in creates nothing new.`));
+        if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
+        footer.appendChild(btn('Cancel', 'ghost', () => { step = 'idle'; render(); }));
+        footer.appendChild(btn([googleLogoOnWhite(18), 'Continue there'], 'primary', () => continueThere(render)));
+      }
       container.appendChild(wrap);
 
     } else if (step === 'new-account') {

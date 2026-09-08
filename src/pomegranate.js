@@ -80,8 +80,10 @@ function oauthPopup(url, expectOrigin, { timeoutMs = 120_000 } = {}) {
       if (e.data && typeof e.data === 'object') finish(resolve, e.data);
     };
     const closed = setInterval(() => { if (w.closed) finish(reject, new Error('Sign-in was cancelled.')); }, 500);
-    const timer = setTimeout(() => { try { w.close(); } catch {} finish(reject, new Error('Sign-in timed out.')); }, timeoutMs);
-    function cleanup() { window.removeEventListener('message', onMsg); clearInterval(closed); clearTimeout(timer); try { w.close(); } catch {} }
+    const timer = setTimeout(() => { if (!w.closed) try { w.close(); } catch {} finish(reject, new Error('Sign-in timed out.')); }, timeoutMs);
+    // Only close a still-open popup: calling close() on one that closed itself
+    // trips a report-only COOP console warning for nothing.
+    function cleanup() { window.removeEventListener('message', onMsg); clearInterval(closed); clearTimeout(timer); if (!w.closed) try { w.close(); } catch {} }
     window.addEventListener('message', onMsg);
   });
 }
@@ -290,7 +292,7 @@ export function erasePopup(operatorURL, { timeoutMs = 300_000 } = {}) {
     let done = false;
     const finish = () => { if (done) return; done = true; clearInterval(closed); clearTimeout(timer); resolve(); };
     const closed = setInterval(() => { if (w.closed) finish(); }, 500);
-    const timer = setTimeout(() => { try { w.close(); } catch {} finish(); }, timeoutMs);
+    const timer = setTimeout(() => { if (!w.closed) try { w.close(); } catch {} finish(); }, timeoutMs);
   });
 }
 
