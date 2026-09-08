@@ -260,6 +260,33 @@ export async function signup({ centralURL, token, email, operators, threshold, s
   return { pubkey, bunkerURI: bunkerURI(handler, c), nsec: nip19.nsecEncode(sk) };
 }
 
+// ── Server helpers (probe + URL validation) ─────────────────────────────────────
+/** Liveness probe: GET / with CORS and a short timeout. 2xx → 'up', else 'down'. */
+export async function probeServer(url, { timeoutMs = 3000 } = {}) {
+  let u;
+  try { u = massageURL(url); } catch { return 'down'; }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(u + '/', { mode: 'cors', signal: ctrl.signal });
+    return r.ok ? 'up' : 'down';
+  } catch { return 'down'; }
+  finally { clearTimeout(timer); }
+}
+
+/** Accept an https:// server URL (or http://localhost), host only — no path/query. */
+export function isValidServerURL(input) {
+  const s = String(input || '').trim();
+  if (!s) return false;
+  let url;
+  try { url = new URL(s.includes('://') ? s : 'https://' + s); } catch { return false; }
+  const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLocal)) return false;
+  if (url.pathname !== '/' && url.pathname !== '') return false;
+  if (url.search || url.hash) return false;
+  return !!url.hostname;
+}
+
 // ── Replace the key behind an account ───────────────────────────────────────────
 /**
  * DELETE the pomegranate account at `central` (clears the account, its profiles

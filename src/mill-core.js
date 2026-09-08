@@ -44,7 +44,7 @@ import {
   loginExisting as pomLogin, getAccount as pomGetAccount, signup as pomSignup,
   deleteAccount as pomDeleteAccount, erasePopup as pomErasePopup, isShardConflict as pomIsShardConflict,
   requestOperatorShard, reconstructFromShards,
-  massageURL as pomMassageURL,
+  massageURL as pomMassageURL, probeServer as pomProbeServer, isValidServerURL as pomIsValidServerURL,
 } from './pomegranate.js';
 
 // njump ecosystem defaults, used when a host enables pomegranate without naming
@@ -1958,14 +1958,55 @@ function renderGoogleFlow(host, onDone, onBack) {
 function renderPomegranateFlow(host, onDone, onBack) {
   const raw = host._state?.pomegranate;
   const cfg = (raw && typeof raw === 'object') ? raw : {};
-  const central = pomMassageURL(cfg.central || POM_DEFAULT_CENTRAL);
-  const operators = (cfg.operators?.length ? cfg.operators : POM_DEFAULT_OPERATORS).map(pomMassageURL);
-  // Match the reference client's default: ~7/12 of n, min 2, capped at n (4 → 3-of-4).
-  const threshold = cfg.threshold || Math.min(operators.length, Math.max(2, Math.ceil((operators.length * 7) / 12)));
+  const uniq = a => a.filter((v, i) => a.indexOf(v) === i);
+  const defaultCentral = pomMassageURL(cfg.central || POM_DEFAULT_CENTRAL);
+  const defaultOperators = (cfg.operators?.length ? cfg.operators : POM_DEFAULT_OPERATORS).map(pomMassageURL);
+  const centralChoices = uniq([defaultCentral, ...((cfg.centralChoices || []).map(pomMassageURL))]);
+  const operatorChoices = uniq([...defaultOperators, ...((cfg.operatorChoices || []).map(pomMassageURL))]);
+  const explicitThreshold = cfg.threshold;
   const relays = cfg.relays;
-  const pinCentral = !!cfg.pinCentral;   // skip cross-central discovery; always use `central`
+  const allowCustomCentral = cfg.allowCustomCentral !== false;
+  const allowCustomOperators = cfg.allowCustomOperators !== false;
+  const minOperators = cfg.minOperators || 3;
+  const pinCentral = cfg.pinCentral !== false;   // DEFAULT true — no discovery redirect unless the host opts out
 
-  let step = central && operators.length ? 'idle' : 'unconfigured';
+  // Threshold from operator count: honour an explicit host value while it leaves
+  // fault tolerance (≤ n−1), else ~7/12 of n (min 2, capped at n): 4 → 3-of-4.
+  const thresholdFor = n => (explicitThreshold && explicitThreshold <= n - 1)
+    ? explicitThreshold : Math.min(n, Math.max(2, Math.ceil((n * 7) / 12)));
+  const defaultThreshold = thresholdFor(defaultOperators.length);   // used by the recover flow
+
+  // Selection state — drives auth / getAccount / signup / replace. Everything
+  // "advanced" (central, operator checklist, threshold) is defaulted and hidden
+  // behind the Advanced disclosure; most users never touch it.
+  let selectedCentral = defaultCentral;
+  let selectedOperators = operatorChoices.map(url => ({ url, checked: defaultOperators.includes(url) }));
+  try {
+    const saved = JSON.parse(localStorage.getItem('mill:pomegranate:servers') || 'null');
+    if (saved && saved.central) { selectedCentral = pomMassageURL(saved.central); if (!centralChoices.includes(selectedCentral)) centralChoices.push(selectedCentral); }
+    if (saved && Array.isArray(saved.operators) && saved.operators.length) {
+      const savedOps = saved.operators.map(pomMassageURL);
+      savedOps.forEach(u => { if (!selectedOperators.find(o => o.url === u)) selectedOperators.push({ url: u, checked: false }); });
+      selectedOperators.forEach(o => { o.checked = savedOps.includes(o.url); });
+    }
+  } catch {}
+  const chosenOperators = () => selectedOperators.filter(o => o.checked).map(o => o.url);
+  const effThreshold = () => thresholdFor(chosenOperators().length);
+  const isDefaultSelection = () => selectedCentral === defaultCentral &&
+    chosenOperators().length === defaultOperators.length && chosenOperators().every(u => defaultOperators.includes(u));
+  const persistServers = () => { try { localStorage.setItem('mill:pomegranate:servers', JSON.stringify({ central: selectedCentral, operators: chosenOperators() })); } catch {} };
+  const resetServers = () => {
+    selectedCentral = defaultCentral;
+    selectedOperators = operatorChoices.map(url => ({ url, checked: defaultOperators.includes(url) }));
+    try { localStorage.removeItem('mill:pomegranate:servers'); } catch {}
+  };
+
+  let step = 'idle';
+  let advancedOpen = false;             // Advanced disclosure on the idle screen
+  let customCentralMode = false;        // "Custom…" chosen in the central select
+  const probeStatus = {};               // operatorURL -> 'up' | 'down' (idle-screen dots)
+  let skipped = [];                     // [{ url, reason }] left out by a resilient signup
+  let signupMeta = null;                // { central, operators, threshold, skipped } for onConnected
   let errMsg = '', statusMsg = '', createdNsec = '', nsecSaved = false;
   let recovered = null;                 // { privHex, nsec, npub } from recovery
   let auth = null;                      // { centralURL, token, email } after Google login, before account creation
@@ -2007,6 +2048,13 @@ function renderPomegranateFlow(host, onDone, onBack) {
     return h('label', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', cursor: 'pointer', fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.4' } }, input, h('span', {}, label));
   }
 
+  // Background liveness probe for the Advanced operator dots (open + Add only).
+  async function probeAdvanced(render, subset) {
+    const targets = subset || selectedOperators.map(o => o.url);
+    await Promise.all(targets.map(async u => { probeStatus[u] = await pomProbeServer(u); }));
+    render();
+  }
+
   // Take a pomegranate bunker URI and connect via mill's existing NIP-46 path.
   async function connectBunker(bunkerURI, render) {
     step = 'connecting-signer'; statusMsg = 'Connecting to your signer…'; errMsg = ''; render();
@@ -2018,7 +2066,8 @@ function renderPomegranateFlow(host, onDone, onBack) {
         remotePubkey: client.remotePubkey, relays: client.relays, userPubkey: userPk,
       });
       const signer = createNIP46Signer(client, userPk);
-      onDone({ method: 'pomegranate', pubkey: userPk, bunkerUrl: bunkerURI, signer, nsec: createdNsec || undefined });
+      persistServers();   // remember the selected central/operators after a real success
+      onDone({ method: 'pomegranate', pubkey: userPk, bunkerUrl: bunkerURI, signer, nsec: createdNsec || undefined, pomegranate: signupMeta || { central: selectedCentral } });
     } catch (e) {
       errMsg = e.message || 'Could not connect to your signer.';
       step = 'idle'; render();
@@ -2050,18 +2099,18 @@ function renderPomegranateFlow(host, onDone, onBack) {
   async function start(render) {
     step = 'connecting'; errMsg = ''; render();
     try {
-      const token = await pomAuthenticate(central);   // popup opens inside the click
+      const token = await pomAuthenticate(selectedCentral);   // popup opens inside the click
       const email = pomTokenEmail(token);
       // Cross-client discovery: is this account set up at a DIFFERENT central?
-      // Skipped when pinned. If so, do NOT auto-open a second popup — the click's
-      // transient activation is already spent and Chrome blocks it. Show an
-      // interstitial whose button re-auths inside a fresh user gesture.
+      // Skipped when pinned (the default). If so, do NOT auto-open a second popup —
+      // the click's transient activation is already spent and Chrome blocks it;
+      // show an interstitial whose button re-auths inside a fresh user gesture.
       const found = pinCentral ? null : await pomDiscover(email, relays);
-      if (found && found.centralURL !== central) {
+      if (found && found.centralURL !== selectedCentral) {
         foundCtx = { token, email, foundCentral: found.centralURL };
         step = 'found-elsewhere'; render(); return;
       }
-      await proceedAt(central, token, render);
+      await proceedAt(selectedCentral, token, render);
     } catch (e) {
       errMsg = e.message || 'Google sign-in failed.';
       step = 'idle'; render();
@@ -2087,7 +2136,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
   async function importHere(render) {
     step = 'connecting'; errMsg = ''; render();
     try {
-      await proceedAt(central, foundCtx.token, render);
+      await proceedAt(selectedCentral, foundCtx.token, render);
     } catch (e) {
       errMsg = e.message || 'Sign-in failed.';
       step = 'found-elsewhere'; render();
@@ -2103,8 +2152,70 @@ function renderPomegranateFlow(host, onDone, onBack) {
     } catch (e) { errMsg = e.message || 'Could not open the erase window.'; render(); }
   }
 
+  // Format a signup failure as "host: status body" (host + trimmed server text).
+  function signupErr(e) {
+    if (!e) return 'Could not create your account.';
+    if (e.floor) return e.message;
+    const host = e.operator ? String(e.operator).replace(/^https?:\/\//, '')
+      : (e.status ? selectedCentral.replace(/^https?:\/\//, '') : '');
+    const parts = [];
+    if (host) parts.push(host + ':');
+    if (e.status) parts.push(String(e.status));
+    const body = (e.body || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+    if (body) parts.push(body);
+    return parts.length ? parts.join(' ') : (e.message || 'Could not create your account.');
+  }
+
+  // Wrap signup() so a single flaky/broken operator at registration time doesn't
+  // fail the whole thing: probe first, drop unreachable ones, and on a 5xx/network
+  // failure clear the pending registration and re-deal the SAME key across the
+  // rest — down to `minOperators`. 4xx (client/protocol) and central failures are
+  // never skipped. Sets `skipped`/`signupMeta`; throws on the floor or an
+  // unskippable error. `sk` keeps its pubkey across re-deals, so operators that
+  // already stored a shard accept the same key again.
+  async function signupResilient({ centralURL, token, email, secretKey, render }) {
+    let remaining = chosenOperators();
+    let attemptToken = token, reauthed = false;
+    const skips = [];
+    // Pre-flight: drop operators that don't answer a health probe.
+    const probes = await Promise.all(remaining.map(async op => [op, await pomProbeServer(op)]));
+    probes.forEach(([op, st]) => { probeStatus[op] = st; });
+    remaining = remaining.filter(op => {
+      if (probeStatus[op] === 'down') { skips.push({ url: op, reason: 'not responding' }); return false; }
+      return true;
+    });
+    skipped = skips.slice();
+    for (;;) {
+      if (remaining.length < minOperators) {
+        const e = new Error(`Not enough operators are reachable (need at least ${minOperators}). Try again later or adjust Advanced.`);
+        e.floor = true; throw e;
+      }
+      const t = thresholdFor(remaining.length);
+      statusMsg = skips.length ? `Registering across ${remaining.length} operators…` : 'Registering your new key…'; render();
+      try {
+        const res = await pomSignup({ centralURL, token: attemptToken, email, operators: remaining, threshold: t, secretKey, relays });
+        signupMeta = { central: centralURL, operators: remaining.slice(), threshold: t, skipped: skips.slice() };
+        skipped = skips.slice();
+        return res;
+      } catch (e) {
+        if (e.status === 401 && !reauthed) { reauthed = true; attemptToken = await pomAuthenticate(centralURL); continue; }
+        // Any post-start failure may have left a pending/partial registration —
+        // clear it before retrying or bailing (idempotent; no-op with no account).
+        try { await pomDeleteAccount(centralURL, attemptToken); } catch {}
+        if (e.operator && !pomIsShardConflict(e) && !(e.status >= 400 && e.status < 500)) {
+          // Operator down / 5xx: drop it and re-deal across the rest.
+          skips.push({ url: e.operator, reason: e.status ? `server error ${e.status}` : 'unreachable' });
+          remaining = remaining.filter(op => pomMassageURL(op) !== pomMassageURL(e.operator));
+          skipped = skips.slice();
+          continue;
+        }
+        throw e;   // 4xx / shard-conflict / central failure → caller decides
+      }
+    }
+  }
+
   async function doReplace(render) {
-    step = 'replacing'; statusMsg = 'Erasing the old account…'; errMsg = ''; render();
+    step = 'replacing'; statusMsg = 'Erasing the old account…'; errMsg = ''; skipped = []; render();
     try {
       const secretKey = mode === 'import' ? hexToBytes(nsecToHex(nsecVal.trim())) : undefined;
       // Delete first (also clears any pending registration), re-auth once on 401.
@@ -2114,8 +2225,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
         if (e.status === 401) { auth.token = await pomAuthenticate(auth.centralURL); await pomDeleteAccount(auth.centralURL, auth.token); }
         else throw e;
       }
-      statusMsg = 'Registering your new key…'; render();
-      const res = await pomSignup({ centralURL: auth.centralURL, token: auth.token, email: auth.email, operators, threshold, secretKey, relays });
+      const res = await signupResilient({ centralURL: auth.centralURL, token: auth.token, email: auth.email, secretKey, render });
       window.__pomBunker = res.bunkerURI;
       if (mode === 'import') {
         // They brought the key — nothing to reveal. Straight into the signer.
@@ -2130,22 +2240,24 @@ function renderPomegranateFlow(host, onDone, onBack) {
         delete eraseRequested[pomMassageURL(e.operator)];
         errMsg = `${e.operator.replace(/^https?:\/\//, '')} still holds your old share — erase it and continue.`;
       } else {
-        errMsg = e.message || 'Could not replace your key.';
+        try { await pomDeleteAccount(auth.centralURL, auth.token); } catch {}   // so Retry never hits the 60s 409
+        errMsg = signupErr(e);
       }
       step = 'replace-erase'; render();
     }
   }
 
   async function doSignup(render) {
-    step = 'creating'; statusMsg = 'Creating your account…'; errMsg = ''; render();
+    step = 'creating'; statusMsg = 'Creating your account…'; errMsg = ''; skipped = []; render();
     try {
       const secretKey = mode === 'import' ? hexToBytes(nsecToHex(nsecVal.trim())) : undefined;
-      const res = await pomSignup({ centralURL: auth.centralURL, token: auth.token, email: auth.email, operators, threshold, secretKey, relays });
+      const res = await signupResilient({ centralURL: auth.centralURL, token: auth.token, email: auth.email, secretKey, render });
       createdNsec = res.nsec; nsecSaved = false;
       window.__pomBunker = res.bunkerURI;
       step = 'created'; render();
     } catch (e) {
-      errMsg = e.message || 'Could not create your account.';
+      try { await pomDeleteAccount(auth.centralURL, auth.token); } catch {}   // so Retry never hits the 60s 409
+      errMsg = signupErr(e);
       step = 'new-account'; render();
     }
   }
@@ -2154,7 +2266,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
     errMsg = ''; render();
     try {
       shards[operatorURL] = await requestOperatorShard(operatorURL);
-      if (Object.keys(shards).length >= threshold) {
+      if (Object.keys(shards).length >= defaultThreshold) {
         recovered = reconstructFromShards(Object.values(shards));
         step = 'recovered'; render();
       } else { render(); }
@@ -2171,20 +2283,68 @@ function renderPomegranateFlow(host, onDone, onBack) {
       container.appendChild(wrap);
 
     } else if (step === 'idle') {
-      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Sign in with Google. Your key is split across independent servers and never stored in one place — no app, including this one, ever holds it whole.', onBack });
-      body.appendChild(badge('info', '🔒', 'How this works', 'A Nostr key is created for you and split into encrypted shares across several operators (a threshold is needed to sign). Google is only used to prove it’s you. Signing happens remotely — the full key is never reassembled.'));
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Continue with Google', subtitle: 'Sign in with Google — your key is split across independent servers and never held whole.', onBack });
       if (errMsg) body.appendChild(h('div', { class: 'mill-error' }, errMsg));
-      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
+      // Account actions — small links, always visible.
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
         onClick: () => { returnTo = ''; step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
-      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '4px' },
+      body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
         onClick: () => { intent = 'replace'; errMsg = ''; start(render); } }, 'Use a different key with this Google account'));
+
+      // Advanced disclosure — how-it-works + servers, collapsed by default so most
+      // users never see the central/operator/threshold machinery.
+      if (allowCustomCentral || allowCustomOperators) {
+        body.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '6px', fontWeight: '600' },
+          onClick: () => { advancedOpen = !advancedOpen; render(); if (advancedOpen) probeAdvanced(render); } }, `${advancedOpen ? '▾' : '▸'} Advanced`));
+      }
+      if (advancedOpen) {
+        const panel = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', padding: '10px', border: '1px solid var(--mill-border)', borderRadius: '10px', background: 'var(--mill-inset)' } });
+        panel.appendChild(badge('info', '🔒', 'How this works', 'A Nostr key is created for you and split into encrypted shares across several operators (a threshold is needed to sign). Google only proves it’s you; the full key is never reassembled.'));
+        if (allowCustomCentral) {
+          panel.appendChild(h('div', { class: 'mill-label' }, 'Central server'));
+          if (!customCentralMode) {
+            const sel = h('select', { class: 'mill-input', onChange: e => { if (e.target.value === '__custom__') { customCentralMode = true; } else { selectedCentral = e.target.value; } render(); } });
+            centralChoices.forEach(c => { const o = h('option', { value: c }, c.replace(/^https?:\/\//, '') + (c === defaultCentral ? ' (default)' : '')); if (c === selectedCentral) o.selected = true; sel.appendChild(o); });
+            sel.appendChild(h('option', { value: '__custom__' }, 'Custom…'));
+            panel.appendChild(sel);
+          } else {
+            const { wrap: cw, input: ci } = field('', 'https://central.example.com', '', () => {}, {}); cw.style.flex = '1';
+            const useBtn = btn('Use', 'ghost small', () => { const v = ci.value.trim(); if (pomIsValidServerURL(v)) { selectedCentral = pomMassageURL(v); if (!centralChoices.includes(selectedCentral)) centralChoices.push(selectedCentral); customCentralMode = false; errMsg = ''; render(); } else { errMsg = 'Enter a valid https:// server URL'; render(); } });
+            const cancelBtn = btn('Cancel', 'ghost small', () => { customCentralMode = false; render(); });
+            panel.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } }, cw, useBtn, cancelBtn));
+          }
+        }
+        if (allowCustomOperators) {
+          panel.appendChild(h('div', { class: 'mill-label' }, 'Operators'));
+          selectedOperators.forEach(o => {
+            const st = probeStatus[o.url];
+            const dot = h('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', flex: '0 0 auto', background: st === 'up' ? 'var(--mill-success)' : st === 'down' ? 'var(--mill-muted)' : 'var(--mill-border)' } });
+            const cb = h('input', { type: 'checkbox' }); cb.checked = o.checked; cb.addEventListener('change', e => { o.checked = e.target.checked; render(); });
+            panel.appendChild(h('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '13px', cursor: 'pointer' } }, cb, dot, h('span', {}, o.url.replace(/^https?:\/\//, '') + (st === 'down' ? ' (not responding)' : ''))));
+          });
+          const { wrap: aw, input: ai } = field('', 'https://po.example.com', '', () => {}, {}); aw.style.flex = '1';
+          const addBtn = btn('Add', 'ghost small', () => { const v = ai.value.trim(); if (!pomIsValidServerURL(v)) { errMsg = 'Enter a valid https:// operator URL'; render(); return; } const u = pomMassageURL(v); if (!selectedOperators.find(x => x.url === u)) selectedOperators.push({ url: u, checked: true }); errMsg = ''; render(); probeAdvanced(render, [u]); });
+          panel.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } }, aw, addBtn));
+        }
+        const n = chosenOperators().length;
+        panel.appendChild(h('div', { class: 'mill-hint' }, n >= minOperators ? `Any ${effThreshold()} of the ${n} selected operators can sign.` : `Select at least ${minOperators} operators.`));
+        panel.appendChild(h('div', { class: 'mill-hint' }, 'Applies to new accounts — existing accounts keep their recorded operators.'));
+        if (!isDefaultSelection()) panel.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', onClick: () => { resetServers(); errMsg = ''; render(); } }, 'Reset to defaults'));
+        body.appendChild(panel);
+      }
+      // Status line — only when the selection is customised, to keep defaults clean.
+      if (!isDefaultSelection()) {
+        const n = chosenOperators().length;
+        body.appendChild(h('div', { class: 'mill-hint', style: { marginTop: '2px' } }, `Signing in at ${selectedCentral.replace(/^https?:\/\//, '')} · ${n} operators, ${effThreshold()} needed`));
+      }
+      const blockPrimary = customCentralMode || chosenOperators().length < minOperators;
       footer.appendChild(btn('Back', 'ghost', onBack));
-      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }));
+      footer.appendChild(btn([googleLogoOnWhite(18), 'Continue with Google'], 'primary', () => { intent = 'signin'; start(render); }, blockPrimary));
       container.appendChild(wrap);
 
     } else if (step === 'found-elsewhere') {
       const foundHost = foundCtx.foundCentral.replace(/^https?:\/\//, '');
-      const cfgHost = central.replace(/^https?:\/\//, '');
+      const cfgHost = selectedCentral.replace(/^https?:\/\//, '');
       const isReplace = intent === 'replace';
       const { wrap, body, footer } = flowWrap({ step: 0, total: isReplace ? 4 : 3, title: 'Account Found Elsewhere', subtitle: `This Google account already has a Nostr identity at ${foundHost}.`, onBack: () => { step = 'idle'; render(); } });
       if (isReplace) {
@@ -2277,6 +2437,7 @@ function renderPomegranateFlow(host, onDone, onBack) {
     } else if (step === 'created') {
       const { wrap, body, footer } = flowWrap({ step: 2, total: 3, title: 'Account Created', subtitle: 'Your account is ready. Optionally save your key before continuing — it is otherwise held only as shares across the operators.', onBack: () => { step = 'idle'; render(); } });
       body.appendChild(badge('success', '🎉', 'You’re set up', 'You can sign in from any compatible app with this Google account.'));
+      if (skipped.length) body.appendChild(badge('warning', '⚠️', 'Some operators were left out', `${skipped.map(s => `${s.url.replace(/^https?:\/\//, '')} (${s.reason})`).join('; ')}. Your key is sharded across ${signupMeta?.operators?.length ?? '?'} operators; any ${signupMeta?.threshold ?? '?'} can sign.`));
       body.appendChild(keyDisplay('Private Key (nsec) — optional backup, keep secret', createdNsec, true));
       body.appendChild(badge('muted', '💾', null, 'Saving this is optional — you can recover later with Google as long as the operators are online. But keeping your own copy means you never depend on them.'));
       footer.appendChild(btn('Continue', 'primary', () => connectBunker(window.__pomBunker, render)));
@@ -2284,8 +2445,8 @@ function renderPomegranateFlow(host, onDone, onBack) {
 
     } else if (step === 'recover') {
       const { wrap, body, footer } = flowWrap({ step: 0, total: 2, title: 'Recover Your Key', subtitle: 'Sign in with Google at each operator to collect your key shares. Once enough are collected, your key is reassembled here, in your browser.', onBack: () => { step = returnTo || 'idle'; render(); } });
-      body.appendChild(h('div', { class: 'mill-hint' }, `Collected ${Object.keys(shards).length} of ${threshold} needed.`));
-      operators.forEach(op => {
+      body.appendChild(h('div', { class: 'mill-hint' }, `Collected ${Object.keys(shards).length} of ${defaultThreshold} needed.`));
+      operatorChoices.forEach(op => {
         const have = !!shards[op];
         const row = h('div', { class: 'mill-grant-row' });
         row.appendChild(h('div', { class: 'mill-grant-left' }, h('div', { class: 'mill-grant-kind' }, `${have ? '✅' : '⏳'} ${op.replace(/^https?:\/\//, '')}`)));
