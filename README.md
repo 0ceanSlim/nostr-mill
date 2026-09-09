@@ -62,7 +62,7 @@ These are the only symbols and shapes covered by SemVer. Anything else in `src/`
 
 ```html
 <!-- Self-hosted -->
-<script src="https://cdn.happytavern.co/mill/mill.umd.js"></script>
+<script src="https://cdn.oslim.dev/mill/mill.umd.js"></script>
 
 <!-- Or via jsDelivr -->
 <script src="https://cdn.jsdelivr.net/npm/nostr-mill/dist/mill.umd.js"></script>
