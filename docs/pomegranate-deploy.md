@@ -27,9 +27,9 @@ up the **pomegranate infrastructure** it needs. It has two halves:
 
 ## Part A — Update the demo page
 
-1. **Bump the mill build** the demo loads to the 1.7 beta once published, e.g.:
+1. **Bump the mill build** the demo loads to 1.7, e.g.:
    ```html
-   <script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.7.0-beta.3/dist/mill.umd.min.js"></script>
+   <script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.7.0/dist/mill.umd.min.js"></script>
    ```
 2. **Enable pomegranate** in the `MILL.open` call (replace the old `backupRelays`
    / Drive-only config). For the shared njump ecosystem — what oslim.dev now uses

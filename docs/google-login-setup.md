@@ -98,7 +98,7 @@ var MILL_ALLOWED_ORIGINS = [
 Load the pinned beta from jsDelivr and pass the shim URL. In the demo's HTML:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.6.0-beta.0/dist/mill.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nostr-mill@1.7.0/dist/mill.umd.min.js"></script>
 <script>
   document.querySelector('#login-button').addEventListener('click', () => {
     MILL.open({
@@ -110,7 +110,7 @@ Load the pinned beta from jsDelivr and pass the shim URL. In the demo's HTML:
 </script>
 ```
 
-Pin the exact version (`@1.6.0-beta.0`) rather than `@beta`, so a later beta
+Pin the exact version (`@1.7.0`) rather than a floating tag, so a later release
 can't change the demo without a deliberate edit.
 
 > Note: the repo's own `examples/index.html` loads `../dist/mill.umd.js`
