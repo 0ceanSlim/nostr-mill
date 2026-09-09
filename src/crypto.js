@@ -124,3 +124,13 @@ const BUNKER_KEY = 'mill:nip46:state';
 export function storeBunkerState(state) { sessionStorage.setItem(BUNKER_KEY, JSON.stringify(state)); }
 export function loadBunkerState()       { const s = sessionStorage.getItem(BUNKER_KEY); try { return s ? JSON.parse(s) : null; } catch { return null; } }
 export function clearBunkerState()      { sessionStorage.removeItem(BUNKER_KEY); }
+
+// Pomade "sign in with email": the ClientOptions bundle IS the session — the
+// FROST group description, this browser's client secret, and the signer URLs.
+// The client secret authorises signing requests to the signers; it is not the
+// user's key, which exists only as shares those services hold and never
+// reassembles here. Same lifetime as the rest: gone when the tab closes.
+const POMADE_KEY = 'mill:pomade:state';
+export function storePomadeState(state) { sessionStorage.setItem(POMADE_KEY, JSON.stringify(state)); }
+export function loadPomadeState()       { const s = sessionStorage.getItem(POMADE_KEY); try { return s ? JSON.parse(s) : null; } catch { return null; } }
+export function clearPomadeState()      { sessionStorage.removeItem(POMADE_KEY); }

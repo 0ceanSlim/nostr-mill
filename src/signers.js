@@ -1,10 +1,12 @@
 /**
  * MILL — signers.js
- * Uniform signer-object factory for all 6 methods.
+ * Uniform signer-object factory for all 7 methods.
  * Every signer exposes:
  *   { method, pubkey, npub, canSign, getPublicKey, signEvent,
  *     nip04?: { encrypt, decrypt }, nip44?: { encrypt, decrypt },
  *     disconnect() }
+ * nip04/nip44 are optional because not every backend implements them — pomade
+ * offers nip44 only — so hosts must feature-detect rather than assume.
  */
 
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
@@ -218,4 +220,41 @@ export function uninstallWindowNostr() {
     window.nostr = _previousWindowNostr;
     _previousWindowNostr = undefined;
   }
+}
+
+// ── Pomade (email login, FROST multisig) ──────────────────────────────────────
+// The key exists only as shares held by independent signer services, so every
+// signature is a two-round network round-trip against a threshold of them —
+// closer to NIP-46 in feel than to a local key, and offline means unable to
+// sign. `PomadeSigner` is injected because @pomade/core is a host-supplied
+// runtime dependency mill never imports itself (see pomade.js).
+export function createPomadeSigner({ client, PomadeSigner, email = '', onDeactivate }) {
+  if (!PomadeSigner) throw new Error('@pomade/core did not provide a PomadeSigner');
+  const inner  = new PomadeSigner(client);
+  const pubkey = client.userPubkey;
+
+  return {
+    method: 'pomade',
+    pubkey,
+    npub: hexToNpub(pubkey),
+    email,
+    canSign: true,
+    client,
+    getPublicKey: () => inner.getPubkey(),
+    // prep() inside @pomade/core stamps created_at, pubkey and id, but it
+    // hashes whatever it is handed — an event template missing tags/content
+    // would hash to something the caller didn't mean.
+    signEvent: (event) => inner.sign({ content: '', tags: [], ...event }),
+    // nip04 is deliberately absent rather than present-and-throwing: pomade
+    // signers implement no ECDH for it, and hosts feature-detect this field.
+    nip44: {
+      encrypt: (pk, pt) => inner.nip44.encrypt(pk, pt),
+      decrypt: (pk, ct) => inner.nip44.decrypt(pk, ct),
+    },
+    // Retiring this browser's session on the signer services is a network call
+    // and an explicit act, so it is NOT part of disconnect() — which also runs
+    // when the element is merely removed from the DOM.
+    deactivate: () => onDeactivate?.(client),
+    disconnect() {},
+  };
 }
