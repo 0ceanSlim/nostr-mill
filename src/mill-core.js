@@ -2640,6 +2640,11 @@ function renderConnectedScreen(result, onDisconnect, opts = {}) {
       h('code', { style: { fontSize: '12px', fontFamily: 'var(--mill-font-mono)', color: 'var(--mill-accent)', wordBreak: 'break-all', lineHeight: '1.6' } }, result.pubkey)
     ));
   }
+  // Primary "I'm done" action — the obvious path for a first-time user. Just
+  // dismisses the modal (same as ✕); onConnected has already fired.
+  if (opts.onContinue) {
+    wrap.appendChild(btn(opts.continueLabel || 'Continue to app', 'primary', opts.onContinue));
+  }
   // "Take control" — only when mill actually holds the key (private-key-backed
   // methods). For NIP-07/46/55 the key lives elsewhere and there's nothing to
   // reveal. Hidden behind a quiet link, per the decision that normies should
@@ -3131,6 +3136,7 @@ class NostrSignerElement extends HTMLElement {
         this._dispatch('mill:disconnected', {});
         this._render();
       }, {
+        onContinue: () => this.close(),
         onShowKeys: () => { this._state.keyexport = true; this._render(); },
         // Re-enter the pomegranate flow straight into "replace the key" (auth →
         // replace-confirm). The flow reconnects on completion.
