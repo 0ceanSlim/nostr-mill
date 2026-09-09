@@ -17,7 +17,7 @@
 <body>
   <h1>⚡ Mill — Local Test</h1>
   <p>Click <strong>Connect</strong>, pick a method, and the result should appear below.</p>
-  <p style="color:#888;font-size:12px">If you have Alby/nos2x installed, NIP-07 should work. Read-only, new keypair, and private key flows always work. NIP-46 needs a bunker URI from nsec.app or similar. NIP-55 (Amber) needs a real Android device on a non-localhost URL — skip on localhost.</p>
+  <p style="color:#888;font-size:12px">If you have Alby/nos2x installed, NIP-07 should work. Read-only, new keypair, and private key flows always work. NIP-46 needs a bunker URI from nsec.app or similar. NIP-55 (Amber) needs a real Android device on a non-localhost URL — skip on localhost. Email &amp; Password talks to live pomade signers, so signing up creates a real account and emails you.</p>
 
   <div class="row">
     <button id="connect">Connect with Mill</button>
@@ -40,9 +40,23 @@
     const signBtn = document.getElementById('sign');
     const dcBtn   = document.getElementById('disconnect');
 
+    // Email login (pomade) needs @pomade/core, which mill does not bundle;
+    // moduleUrl fetches it from a CDN when the user picks the method. Serve
+    // this page over http — the module import fails on file://.
+    const POMADE = {
+      signerUrls: [
+        'https://pomade.coracle.social',
+        'https://pomade.fiatjaf.com',
+        'https://pomade.nostrver.se',
+        'https://pomade.scuttle.works',
+      ],
+      moduleUrl: 'https://esm.sh/@pomade/core@0.3',
+    };
+
     document.getElementById('connect').onclick = () => {
       MILL.open({
         theme: 'dark',
+        pomade: POMADE,
         onConnected: (result) => {
           signer = result.signer;
           out.textContent = JSON.stringify({
@@ -52,6 +66,7 @@
             canSign: result.signer?.canSign,
             hasNip04: !!result.signer?.nip04,
             hasNip44: !!result.signer?.nip44,
+            email:   result.email,
           }, null, 2);
           out.classList.add('ok');
           signBtn.disabled = !result.signer?.canSign;

@@ -1,9 +1,10 @@
 # MILL — Multi-Interface Login Layer
 
 **Zero-dependency Nostr signer UI as a Web Component.**  
-Drop it into any web app with a `<script>` tag. Every Nostr signing method — plus an
-optional **"Continue with Google"** onboarding path for non-technical users, who can
-take full control of their key whenever they choose.
+Drop it into any web app with a `<script>` tag. Every Nostr signing method — plus two
+optional onboarding paths for non-technical users, **"Continue with Google"** and
+**email + password**, either of which lets them take full control of their key
+whenever they choose.
 
 [![npm](https://img.shields.io/npm/v/nostr-mill)](https://www.npmjs.com/package/nostr-mill)
 [![license](https://img.shields.io/npm/l/nostr-mill)](LICENSE)
@@ -21,12 +22,15 @@ take full control of their key whenever they choose.
 | Read Only | — | Public key / npub view-only access |
 | New Identity | — | Generate keypair in-browser |
 | **Google (cloud)** † | — | "Continue with Google": key generated/stored in the user's own Drive, unlocked by a PIN. Import or export the key anytime. |
+| **Email & Password** † | — | [Pomade](https://www.npmjs.com/package/@pomade/core): the key is split into FROST shares across independent signer services and never exists whole. Recover it anytime. |
 
-† **Opt-in and off by default** — it appears only when the host configures an
-OAuth shim (`oauthShim`), and existing hosts see no change to the picker until
-they do. See [Continue with Google](#continue-with-google-cloud-backed-key--opt-in).
-An experimental cross-client recovery layer is available on top — a draft
-[cloud-key-backup NIP](docs/nip-cloud-key-backup.md) with a
+† **Opt-in and off by default.** Google appears only when the host configures an
+OAuth shim (`oauthShim`); email login only when the host names pomade signer
+services (`pomade`). Existing hosts see no change to the picker until they do.
+See [Continue with Google](#continue-with-google-cloud-backed-key--opt-in) and
+[Sign in with email](#sign-in-with-email-pomade-multisig--opt-in).
+An experimental cross-client recovery layer is available on top of the Google
+path — a draft [cloud-key-backup NIP](docs/nip-cloud-key-backup.md) with a
 [reference implementation](src/nipbackup.js).
 
 For private-key signing, MILL also acts as the signer and shows a **per-event
@@ -39,12 +43,13 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `header`, `footer`, `tip`
+- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `backupRelays`, `pomade`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
+- `MILL.configurePomade({ signerUrls, module?, moduleUrl?, argonWorker?, threshold?, total? })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
 - `deliverAmberCallback({ autoClose })`
-- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`, `oauth-shim`, `backup-relays`
+- `<nostr-signer>` attributes: `theme`, `amber-callback`, `app-name`, `oauth-shim`, `backup-relays`, `pomade-signers`
 - Events: `mill:connected`, `mill:disconnected`
 - The `MillResult` object (see "Return value" below)
 - The CSS variables listed under "Theming"
@@ -97,7 +102,7 @@ npm install nostr-tools
   // Open programmatically
   signer.open({
     onConnected: (result) => {
-      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google'
+      console.log(result.method);   // 'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google' | 'pomade'
       console.log(result.pubkey);   // hex pubkey
     }
   });
@@ -262,11 +267,12 @@ MILL.open({ theme: brandTheme({ accent: '#7c3aed', radius: '6px' }) });
 
 ```ts
 type MillResult = {
-  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google';
+  method:    'nip07' | 'nip46' | 'nip55' | 'privatekey' | 'readonly' | 'newkey' | 'google' | 'pomade';
   pubkey:    string;          // hex-encoded public key, always present
   perms?:    SigningPerms;    // per-category pre-approval (privatekey / newkey / google)
   bunkerUrl?: string;         // NIP-46 only
   nsec?:     string;          // newkey flow only — the generated nsec (handle carefully)
+  email?:    string;          // pomade only — the address the account signs in with
 };
 
 // { notes | profile | contacts | dms | zaps | other → 'session' | 'prompt' }
@@ -368,6 +374,75 @@ Google security review to publish.
 
 ---
 
+## Sign in with email (Pomade multisig) — opt-in
+
+The second onboarding path for people who don't want to think about keys, and
+the one that needs no cloud provider.
+[`@pomade/core`](https://www.npmjs.com/package/@pomade/core) splits the user's
+key into FROST shares held by independent signer services. Signing is a
+two-round protocol against a threshold of them, and the key is never
+reassembled. A majority of signers would have to collude to sign as the user,
+and one of them going down costs nothing.
+
+The user sees an ordinary email and password. "Take control of my keys" on the
+connected screen collects fresh email codes, asks the signers for their shares,
+reassembles the nsec in the browser and exports a portable NIP-49 `ncryptsec`,
+the same escape hatch the Google path offers.
+
+```js
+MILL.open({
+  pomade: {
+    module: import('@pomade/core'),          // not bundled — you supply it
+    signerUrls: [
+      'https://signer-a.example',
+      'https://signer-b.example',
+      'https://signer-c.example',
+    ],
+    argonWorker: import('@pomade/core/argon-worker.js?worker'),  // optional, avoids UI jank
+  },
+});
+```
+
+You supply `@pomade/core`. It is an order of magnitude larger than mill, so mill
+never imports it and the CDN build is the same size whether or not you enable
+this method. Pass it as `pomade.module` (a namespace, a promise, or a function
+returning either), set `window.PomadeCore`, or give a `pomade.moduleUrl` to
+import at runtime. [`docs/pomade-login-setup.md`](docs/pomade-login-setup.md)
+covers all three, and how to choose signer services.
+
+Group shape defaults to a **two-thirds threshold over every configured signer**
+(three signers → 2-of-3); override with `threshold` / `total`.
+
+### Restoring a session
+
+Mill persists the pomade `ClientOptions` bundle — the group description, this
+browser's client secret and the signer URLs — in `sessionStorage`. Restoring
+needs `@pomade/core` again, so configure it first if `restore()` may run before
+your first `open()`:
+
+```js
+MILL.configurePomade({ module: import('@pomade/core'), signerUrls: [...] });
+const signer = await MILL.restore({ method: 'pomade', pubkey });
+```
+
+"Disconnect & Switch Account" deactivates the session on the signers.
+
+### Limits
+
+- **Signing requires the network.** Every signature is two round trips to a
+  threshold of signers, so an offline tab cannot sign. This behaves more like
+  NIP-46 than like a local key.
+- **nip44 only.** Pomade implements no ECDH for nip04, so `signer.nip04` is
+  `undefined` rather than a function that throws. Feature-detect it.
+- **A threshold of signers can sign as the user.** Three signers run by one
+  operator give none of the protection the arrangement implies. Pick operators
+  under separate control, and name them in your UI.
+- **Email and password are the recovery credential.** There is no reset that
+  doesn't go through the user's inbox. Sign-up confirms the address first,
+  because a typo there is unrecoverable once the tab closes.
+
+---
+
 ## Signing consent (private key only)
 
 When mill holds the key itself, it acts as the signer — so it owns the approval
@@ -425,6 +500,7 @@ MILL.openSettings();   // per-kind grants: Allow / Block / Ask, plus Forget all
 - **NIP-07**: MILL never sees the private key. Only the public key and completed signed events pass through.  
 - **NIP-46**: Only signed event payloads travel over the relay — never the key.  
 - **NIP-55**: On-device intent — no network between apps.  
+- **Pomade**: MILL never holds the key. Shares stay with the signer services and only come back together in the browser during "take control of my keys". What is persisted is the session's client secret, which authorises signing requests but says nothing about the identity. Security rests on a threshold of signers being under separate control, and on the user's email account.  
 
 ---
 

@@ -21,6 +21,7 @@ import {
   storeEncryptedNsec, loadEncryptedNsec, clearStoredNsec,
   storeSignPerms, loadSignPerms, clearSignPerms,
   storeBunkerState, loadBunkerState, clearBunkerState,
+  storePomadeState, loadPomadeState, clearPomadeState,
   bytesToHex,
 } from './crypto.js';
 import { getPublicKey } from 'nostr-tools/pure';
@@ -30,7 +31,7 @@ import { NIP46Client, parseBunkerURI, DEFAULT_RELAYS, SUGGESTED_RELAYS } from '.
 import { isLocalhost } from './nip55.js';
 import {
   createNIP07Signer, createNIP46Signer, createNIP55Signer,
-  createPrivateKeySigner, createReadOnlySigner, installAsWindowNostr,
+  createPrivateKeySigner, createReadOnlySigner, createPomadeSigner, installAsWindowNostr,
 } from './signers.js';
 import { kindLabel, kindNip, kindArticle } from './kinds.js';
 import {
@@ -44,6 +45,11 @@ import {
   encryptBackupPayload, decryptBackupPayload, buildBackupEvent, nextCounter,
   publishBackup, fetchBackup,
 } from './nipbackup.js';
+import {
+  configurePomade, pomadeAvailable, pomadeSignerUrls, pomadeGroupShape, loadPomade,
+  pomadeLogin, pomadeLoginWithCodes, pomadeRequestCodes, pomadeSelectAccount,
+  pomadeRegister, pomadeVerifyCode, pomadeRecoverSecret, pomadeClient, pomadeDeactivate,
+} from './pomade.js';
 
 // ── Signing permission categories ─────────────────────────────────────────────
 const SIGN_CATS = [
@@ -69,6 +75,9 @@ const RESTORE_METHOD_ALIASES = {
   // Google login builds a private-key signer from the cloud-recovered key;
   // after a reload the sessionStorage blob restores it exactly like privatekey.
   google:            'privatekey',
+  // Pomade holds no local key, so it restores as itself rather than folding
+  // into privatekey the way the Google path does.
+  email:             'pomade',
 };
 
 // These choose whether a category is PRE-APPROVED, not when a password is
@@ -90,10 +99,12 @@ const METHOD_META = {
   nip55:      { label: 'Android Signer',    icon: '📱',  color: 'var(--mill-teal)'    },
   newkey:     { label: 'New Identity',      icon: '✨',  color: 'var(--mill-success)' },
   google:     { label: 'Google',            icon: googleLogo, color: 'var(--mill-accent)' },
+  pomade:     { label: 'Email',             icon: '✉️',  color: 'var(--mill-success)' },
 };
 
 const METHODS_LIST = [
   { id: 'google',     label: 'Google',             sub: 'Cloud login',   icon: googleLogo, secLabel: 'Easiest', secColor: 'var(--mill-success)' },
+  { id: 'pomade',     label: 'Email & Password',   sub: 'Multisig signers', icon: '✉️', secLabel: 'Recoverable', secColor: 'var(--mill-success)' },
   { id: 'nip07',      label: 'Browser Extension', sub: 'NIP-07',        icon: '🧩', secLabel: 'Recommended',  secColor: 'var(--mill-success)' },
   { id: 'nip46',      label: 'Remote Signer',     sub: 'NIP-46 Bunker', icon: '📡', secLabel: 'High security', secColor: 'var(--mill-teal)'    },
   { id: 'nip55',      label: 'Android Signer',    sub: 'NIP-55 · Amber',icon: '📱', secLabel: 'Android only',  secColor: 'var(--mill-warning)'    },
@@ -887,6 +898,10 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   // list still shows it if asked (clicking without a shim shows a clear
   // "not configured" screen rather than failing silently).
   const googleAvailable = !!host?.getAttribute?.('oauth-shim');
+  // Same rule for pomade: an email login with no signer services behind it is
+  // a dead end, so it stays out of the default picker until one is configured.
+  const pomadeReady     = pomadeAvailable(host);
+  const easyAvailable   = googleAvailable || pomadeReady;
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
   const resolved = explicit
     ? methodFilter.map(entry => {
@@ -898,6 +913,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     : METHODS_LIST.filter(m => {
         if (DEFAULT_HIDDEN_METHODS.has(m.id)) return false;
         if (m.id === 'google') return googleAvailable;
+        if (m.id === 'pomade') return pomadeReady;
         return true;
       });
 
@@ -908,16 +924,18 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const signInList     = calloutEntry ? resolved.filter(m => m.id !== calloutId) : resolved;
 
   if (calloutEntry) {
-    // When Google login is configured, "I'm new here" opens a chooser
-    // (Continue with Google / Generate my own keys) instead of jumping
-    // straight to key generation. With no Google shim set, behaviour is
-    // unchanged — existing hosts see exactly the same screen as before.
-    const calloutTarget = (calloutId === 'newkey' && googleAvailable) ? '_newhere' : calloutId;
+    // When an easy-onboarding method is configured, "I'm new here" opens a
+    // chooser (Google / email / generate my own keys) instead of jumping
+    // straight to key generation. With none configured, behaviour is unchanged
+    // — existing hosts see exactly the same screen as before.
+    const calloutTarget = (calloutId === 'newkey' && easyAvailable) ? '_newhere' : calloutId;
     // Per-method callout copy. Default New-Identity copy if it's newkey.
     const calloutCopy = calloutId === 'newkey'
-      ? { headline: "I'm new here!", subline: googleAvailable
-          ? 'Get started in seconds. No email, no keys to manage.'
-          : 'Create a new Nostr identity in seconds — no email, no signup.' }
+      ? { headline: "I'm new here!", subline: !easyAvailable
+          ? 'Create a new Nostr identity in seconds — no email, no signup.'
+          : (pomadeReady
+              ? 'Get started in seconds. Sign up with an email, or bring your own keys.'
+              : 'Get started in seconds. No email, no keys to manage.') }
       : { headline: calloutEntry.label, subline: calloutEntry.sub || '' };
     const callout = h('button', {
       class: 'mill-method-card',
@@ -1611,10 +1629,11 @@ const isValidPin = s => CLOUD_PIN_RE.test(s || '');
 const sanitizePin = s => (s || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
 
 // ── Flow: "I'm new here" chooser ──────────────────────────────────────────────
-// Only reached when Google login is configured. Two ways to start: the normie
-// path (Google, key hidden) and the self-custody path (generate, save your own
-// key). Framed so the easy choice is obvious but the sovereign one is right
-// there — matching the user's goal of easy-onboarding-now, take-control-later.
+// Only reached when an easy-onboarding method is configured. Two kinds of way
+// to start: the normie paths (Google or email, key hidden) and the self-custody
+// path (generate, save your own key). Framed so the easy choice is obvious but
+// the sovereign one is right there — matching the user's goal of
+// easy-onboarding-now, take-control-later.
 function renderNewHereChooser(host, onSelect, onBack) {
   const { wrap, body, footer } = flowWrap({
     step: 0, total: 1,
@@ -1639,9 +1658,19 @@ function renderNewHereChooser(host, onSelect, onBack) {
     return card;
   };
 
-  body.appendChild(option(googleLogo, 'Continue with Google',
-    'Easiest. Your key is created and safely stored for you — nothing to write down.',
-    true, () => onSelect('google')));
+  const googleAvailable = !!host?.getAttribute?.('oauth-shim');
+  const pomadeReady     = pomadeAvailable(host);
+
+  if (googleAvailable) {
+    body.appendChild(option(googleLogo, 'Continue with Google',
+      'Easiest. Your key is created and safely stored for you — nothing to write down.',
+      true, () => onSelect('google')));
+  }
+  if (pomadeReady) {
+    body.appendChild(option('✉️', 'Sign up with email',
+      'Easy. Your key is split across independent services — no one company holds it, and your email and password bring it back.',
+      !googleAvailable, () => onSelect('pomade:signup')));
+  }
   body.appendChild(option('🔑', 'Generate my own keys',
     'Advanced. You get your private key immediately and are responsible for backing it up.',
     false, () => onSelect('newkey')));
@@ -2016,6 +2045,325 @@ function renderGoogleFlow(host, onDone, onBack) {
   return container;
 }
 
+// ── Flow: Pomade (email + password over a FROST multisig) ─────────────────────
+// The second easy-onboarding path, and the one that needs no cloud provider.
+// Instead of one service holding an encrypted copy of the key, the key is split
+// into shares across independent signer services and never exists whole
+// anywhere — not in mill, not on any one signer. Signing is a two-round
+// protocol against a threshold of them: a majority would have to collude to act
+// as the user, and one service going down costs nothing.
+//
+// What the user sees is an ordinary email and password. What they get is an
+// identity no single party can lock them out of, and which they can extract in
+// full whenever they like — "take control of my keys" runs pomade's recovery.
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const POMADE_MIN_PASSWORD = 12;
+
+// Codes arrive one per signer, each carrying its own routing prefix, so users
+// paste a blob of them from several emails. Split on anything that isn't part
+// of a code and drop duplicates rather than making them tidy it up.
+const parseCodes = s => [...new Set(String(s || '').split(/[^A-Za-z0-9-]+/).filter(Boolean))];
+
+function renderPomadeFlow(host, onDone, onBack, opts = {}) {
+  const urls  = pomadeSignerUrls(host);
+  const shape = pomadeGroupShape(host);
+
+  let flow = opts.signup ? 'signup' : 'password';   // 'password' | 'codes' | 'signup'
+  let step = urls.length ? (opts.signup ? 'signup' : 'signin') : 'unconfigured';
+  let email = '', password = '', password2 = '';
+  let codesVal = '', verifyCode = '';
+  let errMsg = '', statusMsg = '';
+  let busy = false, verifyFailed = false, unverified = false;
+  let peersByPrefix = null;
+  let accounts = [], clientSecret = '';
+  let session = null;              // { client, clientOptions } once an account is open
+  let keys = null;                 // keypair generated for a new account
+  const container = h('div', {});
+
+  // Recomputed rather than captured: the user can switch from password to
+  // codes mid-flow, which adds a screen.
+  const total   = () => (flow === 'password' ? 2 : 3);
+  const lastIdx = () => (flow === 'password' ? 1 : 2);
+  const subLink = (label, onClick) => h('button', { class: 'mill-back', style: { marginBottom: '0' }, onClick }, label);
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  const enterWorking = (msg, render) => { step = 'working'; statusMsg = msg; errMsg = ''; busy = true; render(); };
+  const failTo       = (e, back, render) => { errMsg = e?.message || 'Something went wrong.'; busy = false; step = back; render(); };
+
+  // Common tail for both sign-in variants: one account opens straight away,
+  // several mean the same email holds more than one identity and the user picks.
+  async function useOptions(res, back, render) {
+    const seen = new Set();
+    accounts = res.options.filter(o => !seen.has(o.pubkey) && seen.add(o.pubkey));
+    clientSecret = res.clientSecret;
+    if (accounts.length > 1) { busy = false; step = 'choose'; render(); return; }
+    await openAccount(accounts[0], back, render);
+  }
+
+  async function openAccount(option, back, render) {
+    enterWorking('Opening your account…', render);
+    try {
+      session = await pomadeSelectAccount(host, { clientSecret, option });
+      busy = false; step = 'confirm'; render();
+    } catch (e) { failTo(e, back, render); }
+  }
+
+  async function doSignIn(render) {
+    enterWorking('Checking with the signer services…', render);
+    try {
+      await useOptions(await pomadeLogin(host, { email: email.trim(), password }), 'signin', render);
+    } catch (e) { failTo(e, 'signin', render); }
+  }
+
+  async function doRequestCodes(render) {
+    // A new set invalidates the old one, so anything already typed is dead.
+    codesVal = '';
+    enterWorking('Sending your login codes…', render);
+    try {
+      peersByPrefix = await pomadeRequestCodes(host, { email: email.trim() });
+      busy = false; step = 'codes-enter'; render();
+    } catch (e) { failTo(e, 'codes-request', render); }
+  }
+
+  async function doCodesSignIn(render) {
+    const otps = parseCodes(codesVal);
+    enterWorking('Checking your codes…', render);
+    try {
+      await useOptions(await pomadeLoginWithCodes(host, { email: email.trim(), peersByPrefix, otps }), 'codes-enter', render);
+    } catch (e) { failTo(e, 'codes-enter', render); }
+  }
+
+  async function doSignUp(render) {
+    const addr = email.trim();
+    if (!EMAIL_RE.test(addr))                 { errMsg = 'Enter a valid email address.'; render(); return; }
+    if (password.length < POMADE_MIN_PASSWORD) { errMsg = `Use at least ${POMADE_MIN_PASSWORD} characters.`; render(); return; }
+    if (password !== password2)               { errMsg = 'Passwords do not match.'; render(); return; }
+
+    enterWorking('Creating your account…', render);
+    try {
+      // Kept across retries on purpose: re-registering the same secret lands on
+      // the same identity rather than stranding the user with a second one.
+      keys = keys || await generateKeypair();
+      session = await pomadeRegister(host, { secret: keys.privHex, email: addr, password });
+
+      // One code from one signer — enough to prove the address is real and
+      // reachable, without three emails before the user has even signed in.
+      statusMsg = 'Sending your confirmation code…'; render();
+      const peers = session.clientOptions.peers.filter(Boolean);
+      peersByPrefix = await pomadeRequestCodes(host, { email: addr, peers: [peers[Math.floor(Math.random() * peers.length)]] });
+      busy = false; step = 'signup-verify'; render();
+    } catch (e) {
+      // If the account itself was created, the failure was only the
+      // confirmation email — carry on rather than making them register twice.
+      if (session) { unverified = true; errMsg = ''; busy = false; step = 'confirm'; render(); return; }
+      failTo(e, 'signup', render);
+    }
+  }
+
+  async function doVerify(render) {
+    busy = true; errMsg = ''; render();
+    try {
+      const ok = await pomadeVerifyCode(host, { email: email.trim(), peersByPrefix, otp: verifyCode });
+      if (ok) { step = 'confirm'; verifyFailed = false; }
+      else { verifyFailed = true; errMsg = 'That code did not match. Codes are single-use, so request a new one to try again.'; }
+    } catch (e) { verifyFailed = true; errMsg = e.message || 'Could not check that code.'; }
+    busy = false; render();
+  }
+
+  async function resendCode(render) {
+    busy = true; errMsg = ''; verifyCode = ''; render();
+    try {
+      const peers = session.clientOptions.peers.filter(Boolean);
+      peersByPrefix = await pomadeRequestCodes(host, { email: email.trim(), peers: [peers[Math.floor(Math.random() * peers.length)]] });
+      verifyFailed = false;
+    } catch (e) { errMsg = e.message || 'Could not send a new code.'; }
+    busy = false; render();
+  }
+
+  async function finish(render) {
+    enterWorking('Connecting…', render);
+    try {
+      const { PomadeSigner } = await loadPomade(host);
+      const { client, clientOptions } = session;
+      // The ClientOptions bundle is the whole session — persisting it is what
+      // lets MILL.restore() rebuild this signer after a reload.
+      storePomadeState({ clientOptions, email: email.trim(), pubkey: client.userPubkey });
+      const signer = createPomadeSigner({ client, PomadeSigner, email: email.trim(), onDeactivate: pomadeDeactivate });
+      keys = null;
+      onDone({ method: 'pomade', pubkey: client.userPubkey, email: email.trim(), signer });
+    } catch (e) { failTo(e, 'confirm', render); }
+  }
+
+  // ── Screens ────────────────────────────────────────────────────────────────
+  function render() {
+    container.innerHTML = '';
+
+    if (step === 'unconfigured') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 1, title: 'Email Login Not Configured', subtitle: 'This app has not set up the signer services email login needs.', onBack });
+      body.appendChild(badge('warning', '⚙️', 'Nothing to sign in to yet',
+        'Email login splits your key across independent signer services. The app has to name those services before anyone can use it — until then, pick another method.'));
+      body.appendChild(h('div', { class: 'mill-hint' }, 'Developers: pass MILL.open({ pomade: { signerUrls: [...], module: import("@pomade/core") } }).'));
+      footer.appendChild(btn('Back', 'ghost', onBack));
+      container.appendChild(wrap);
+
+    } else if (step === 'working') {
+      const { wrap, body } = flowWrap({ step: 0, total: 1, title: 'Just a moment…', subtitle: statusMsg });
+      const center = h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '18px', padding: '22px 0' } });
+      center.appendChild(spinner('var(--mill-accent)', 48));
+      center.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', textAlign: 'center' } }, statusMsg));
+      body.appendChild(center);
+      // Registration is genuinely slow — proof of work and a password hash per
+      // signer. Saying so beats letting people wonder if it has hung.
+      if (/Creating/.test(statusMsg)) {
+        body.appendChild(badge('muted', '⏳', null, `Splitting your key across ${shape.total} signer services. This takes a few seconds — the work is deliberate, and it only happens once.`));
+      }
+      container.appendChild(wrap);
+
+    } else if (step === 'signin') {
+      const ok = () => EMAIL_RE.test(email.trim()) && !!password;
+      const { wrap, body, footer } = flowWrap({ step: 0, total: total(), title: 'Sign in with Email', subtitle: 'Your key is held as shares by independent services. No single one can use it.', onBack });
+      const submit = () => { if (ok()) doSignIn(render); };
+      const ef = field('Email', 'you@example.com', email, v => { email = v; errMsg = ''; sync(); }, { type: 'email' });
+      const pf = field('Password', 'Your password', password, v => { password = v; errMsg = ''; sync(); }, { type: 'password' });
+      const goBtn = btn('Sign In', 'primary', submit, !ok());
+      const sync = () => { goBtn.disabled = !ok(); };
+      [ef.input, pf.input].forEach(i => i?.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); }));
+      body.appendChild(ef.wrap);
+      body.appendChild(pf.wrap);
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      body.appendChild(subLink('Forgot your password? Sign in with a one-time code →', () => { flow = 'codes'; step = 'codes-request'; errMsg = ''; render(); }));
+      body.appendChild(subLink("Don't have an account? Create one →", () => { flow = 'signup'; step = 'signup'; errMsg = ''; password = ''; render(); }));
+      footer.appendChild(btn('Cancel', 'ghost', onBack));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'codes-request') {
+      const ok = () => EMAIL_RE.test(email.trim());
+      const back = () => { flow = 'password'; step = 'signin'; errMsg = ''; render(); };
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Sign in with a Code', subtitle: 'No password needed — the signer services will email you.', onBack: back });
+      const ef = field('Email', 'you@example.com', email, v => { email = v; errMsg = ''; goBtn.disabled = !ok(); }, { type: 'email' });
+      const goBtn = btn('Email My Codes', 'primary', () => { if (ok()) doRequestCodes(render); }, !ok());
+      ef.input?.addEventListener('keydown', e => { if (e.key === 'Enter' && ok()) doRequestCodes(render); });
+      body.appendChild(ef.wrap);
+      body.appendChild(badge('info', '✉️', `Expect ${urls.length} separate emails`,
+        `Each signer service holds only a piece of your key and checks you independently, so each one sends its own code. You will need ${shape.threshold} or more of them.`));
+      body.appendChild(h('div', { class: 'mill-hint' },
+        'The signers never say whether an address has an account — that would let anyone test addresses. So this screen always continues, and no codes arriving means no account for that address.'));
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Back', 'ghost', back));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'codes-enter') {
+      const ok = () => parseCodes(codesVal).length >= shape.threshold;
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 3, title: 'Enter Your Codes', subtitle: `If ${email.trim()} has an account, each signer has emailed a code. Paste them all — ${shape.threshold} of ${urls.length} is enough.`, onBack: () => { step = 'codes-request'; codesVal = ''; errMsg = ''; render(); } });
+      const cf = field('Login codes', 'Paste your codes here — one per line', codesVal, v => { codesVal = v; errMsg = ''; sync(); }, { mono: true, rows: 4 });
+      const goBtn = btn('Sign In', 'primary', () => { if (ok()) doCodesSignIn(render); }, !ok());
+      const count = h('div', { class: 'mill-hint' });
+      const sync = () => {
+        const n = parseCodes(codesVal).length;
+        goBtn.disabled = !ok();
+        count.textContent = n >= shape.threshold
+          ? `${n} code${n === 1 ? '' : 's'} — that's enough.`
+          : `${n} of ${shape.threshold} codes so far. Codes can be pasted together in any order.`;
+      };
+      body.appendChild(cf.wrap);
+      body.appendChild(count);
+      sync();
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      body.appendChild(subLink('Send a new set of codes →', () => doRequestCodes(render)));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'codes-request'; codesVal = ''; errMsg = ''; render(); }));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'choose') {
+      const back = () => { step = flow === 'codes' ? 'codes-enter' : 'signin'; accounts = []; render(); };
+      const { wrap, body, footer } = flowWrap({ step: flow === 'password' ? 1 : 2, total: total(), title: 'Choose an Account', subtitle: `More than one account uses ${email.trim()}. Pick which one to sign in as.`, onBack: back });
+      accounts.forEach((option, i) => {
+        const card = h('button', { class: 'mill-method-card', onClick: () => openAccount(option, 'choose', render) });
+        card.appendChild(h('div', { class: 'mill-method-icon', style: { width: '34px', height: '34px', fontSize: '16px' } }, '✉️'));
+        card.appendChild(h('div', { style: { flex: '1', minWidth: '0' } },
+          h('div', { style: { fontSize: '13px', fontWeight: '600' } }, `Account ${i + 1}`),
+          h('code', { style: { fontSize: '10.5px', fontFamily: 'var(--mill-font-mono)', color: 'var(--mill-accent)', wordBreak: 'break-all', display: 'block', marginTop: '2px', lineHeight: '1.4' } }, hexToNpub(option.pubkey)),
+        ));
+        card.appendChild(h('span', { class: 'mill-arrow' }, '→'));
+        body.appendChild(card);
+      });
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Back', 'ghost', back));
+      container.appendChild(wrap);
+
+    } else if (step === 'signup') {
+      const back = () => { if (opts.signup) { onBack(); return; } flow = 'password'; step = 'signin'; errMsg = ''; password = ''; password2 = ''; render(); };
+      const ok = () => EMAIL_RE.test(email.trim()) && password.length >= POMADE_MIN_PASSWORD && password === password2;
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Create an Account', subtitle: 'Sign up with an email and password. We handle the keys until you want them.', onBack: back });
+
+      const goBtn = btn('Create Account', 'primary', () => doSignUp(render), true);
+      const err2  = h('div', { class: 'mill-error' });
+      const sync  = () => {
+        goBtn.disabled = !ok();
+        err2.textContent = password2 && password !== password2 ? 'Passwords do not match'
+          : (password && password.length < POMADE_MIN_PASSWORD ? `At least ${POMADE_MIN_PASSWORD} characters` : '');
+      };
+      const ef  = field('Email', 'you@example.com', email, v => { email = v; errMsg = ''; sync(); }, { type: 'email' });
+      const pf  = field('Password', `At least ${POMADE_MIN_PASSWORD} characters`, password, v => { password = v; errMsg = ''; sync(); }, { type: 'password' });
+      const pf2 = field('Confirm Password', 'Repeat password', password2, v => { password2 = v; errMsg = ''; sync(); }, { type: 'password' });
+      body.appendChild(ef.wrap);
+      body.appendChild(pf.wrap);
+      body.appendChild(pf2.wrap);
+      body.appendChild(err2);
+      sync();
+
+      body.appendChild(badge('info', '🧩', 'How this keeps your key safe',
+        `Your key is generated here, split into ${shape.total} pieces, and sent to ${shape.total} independent services. It is never stored whole anywhere. Signing needs ${shape.threshold} of them to agree, so no single service can act as you — or lock you out.`));
+      body.appendChild(badge('warning', '📧', 'Your email and password are the only way back',
+        'They are what proves an account is yours on a new device. There is no support desk that can reset them for you, so use an address you keep and a password you can find again.'));
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Back', 'ghost', back));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
+    } else if (step === 'signup-verify') {
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 3, title: 'Confirm Your Email', subtitle: `Enter the code sent to ${email.trim()}.` });
+      body.appendChild(badge('info', '✉️', 'Why this matters',
+        'Your account already exists. This checks the address actually reaches you — if it has a typo, you will not be able to sign in again once this tab closes.'));
+      const cf = field('Confirmation code', 'Paste the code from your email', verifyCode, v => { verifyCode = v; errMsg = ''; goBtn.disabled = busy || !v.trim(); }, { mono: true });
+      const goBtn = btn(busy ? 'Checking…' : 'Confirm', 'primary', () => doVerify(render), busy || !verifyCode.trim());
+      cf.input?.addEventListener('keydown', e => { if (e.key === 'Enter' && verifyCode.trim()) doVerify(render); });
+      body.appendChild(cf.wrap);
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      body.appendChild(subLink('Send a new code →', () => resendCode(render)));
+      // Only offered once a code has actually failed: the address may be fine
+      // and the mail merely slow, and the account works either way.
+      if (verifyFailed) {
+        body.appendChild(subLink('Skip for now and continue →', () => { unverified = true; errMsg = ''; step = 'confirm'; render(); }));
+      }
+      footer.appendChild(btn('Cancel', 'ghost', onBack, busy));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
+    } else {
+      const pubkey = session?.client?.userPubkey || '';
+      const isNew  = flow === 'signup';
+      const { wrap, body, footer } = flowWrap({ step: lastIdx(), total: total(), title: isNew ? 'Account Created' : 'Account Found', subtitle: isNew ? 'Your identity is live and your key is already split across the signers.' : 'Signed in. Your key stays split across the signer services.' });
+      body.appendChild(keyDisplay('Your Public Key (npub)', pubkey ? hexToNpub(pubkey) : ''));
+      if (unverified) {
+        body.appendChild(badge('warning', '⚠️', 'Email not confirmed',
+          `We could not confirm ${email.trim()}. Your account works now, but if that address is wrong you will not be able to sign in again. Recover your key from the account screen if you are unsure.`));
+      }
+      body.appendChild(badge('success', '✅', 'Signing is live',
+        `Every signature is agreed by ${shape.threshold} of ${shape.total} signer services. Nothing to install, and nothing on this device to lose — but you do need to be online to sign.`));
+      body.appendChild(badge('muted', '🔑', null, 'Your key is yours whenever you want it: "Take control of my keys" on the next screen reassembles it and hands it over.'));
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Cancel', 'ghost', onBack));
+      footer.appendChild(btn(isNew ? 'Enter Nostr ✨' : 'Confirm Connection', isNew ? 'success' : 'primary', () => finish(render)));
+      container.appendChild(wrap);
+    }
+  }
+  render();
+  return container;
+}
+
 // ── Flow: New Keypair ─────────────────────────────────────────────────────────
 function renderNewKeypairFlow(host, onDone, onBack) {
   let step = 0, keys = null, checks = [false, false, false], pw = '', pw2 = '', generating = false;
@@ -2128,11 +2476,13 @@ function renderConnectedScreen(result, onDisconnect, opts = {}) {
       h('code', { style: { fontSize: '12px', fontFamily: 'var(--mill-font-mono)', color: 'var(--mill-accent)', wordBreak: 'break-all', lineHeight: '1.6' } }, result.pubkey)
     ));
   }
-  // "Take control" — only when mill actually holds the key (private-key-backed
-  // methods). For NIP-07/46/55 the key lives elsewhere and there's nothing to
-  // reveal. Hidden behind a quiet link, per the decision that normies should
-  // never have to think about keys until they choose to.
-  if (opts.onShowKeys && loadEncryptedNsec()) {
+  // "Take control" — when mill either holds the key (private-key-backed
+  // methods) or can have it reassembled on demand (pomade, where the shares
+  // come back together only for this). For NIP-07/46/55 the key lives
+  // elsewhere and there's nothing to reveal. Hidden behind a quiet link, per
+  // the decision that normies should never have to think about keys until they
+  // choose to.
+  if (opts.onShowKeys && (loadEncryptedNsec() || result.method === 'pomade')) {
     wrap.appendChild(btn('Take control of my keys', 'ghost small', opts.onShowKeys));
   }
   wrap.appendChild(btn('Disconnect & Switch Account', 'ghost small', onDisconnect));
@@ -2145,10 +2495,40 @@ function renderConnectedScreen(result, onDisconnect, opts = {}) {
 // password / PIN first — seeing the key is exactly when re-authentication is
 // warranted, and it means a shoulder-surfer on an unlocked tab still can't.
 function renderKeyExport(host, result, onBack) {
-  let step = 'auth', pw = '', privHex = '', errMsg = '';
+  const isCloud  = result?.method === 'google';
+  const isPomade = result?.method === 'pomade';
+  // Pomade never had the key to decrypt: proving ownership means collecting
+  // fresh email codes and asking the signers to hand their shares back, so its
+  // gate is a two-screen round trip rather than a password box.
+  const pomadeState = isPomade ? loadPomadeState() : null;
+  const recoverThreshold = pomadeState?.clientOptions?.group?.threshold || 2;
+  let step = isPomade ? 'pomade-request' : 'auth', pw = '', privHex = '', errMsg = '';
   let pass = '', ncryptsec = '', exporting = false;
+  let codesVal = '', peersByPrefix = null, busy = false;
   const container = h('div', {});
-  const isCloud = result?.method === 'google';
+
+  async function requestRecoveryCodes(render) {
+    busy = true; errMsg = ''; render();
+    try {
+      peersByPrefix = await pomadeRequestCodes(host, { email: pomadeState.email, peers: pomadeState.clientOptions.peers });
+      step = 'pomade-codes';
+    } catch (e) { errMsg = e.message || 'Could not send recovery codes.'; }
+    busy = false; render();
+  }
+
+  async function recoverKey(render) {
+    busy = true; errMsg = ''; render();
+    try {
+      privHex = await pomadeRecoverSecret(host, {
+        email: pomadeState.email,
+        peersByPrefix,
+        otps: parseCodes(codesVal),
+        clientOptions: pomadeState.clientOptions,
+      });
+      step = 'reveal';
+    } catch (e) { errMsg = e.message || 'Could not recover your key.'; }
+    busy = false; render();
+  }
 
   function render() {
     container.innerHTML = '';
@@ -2172,14 +2552,48 @@ function renderKeyExport(host, result, onBack) {
       footer.appendChild(btn('Reveal', 'primary', submit));
       container.appendChild(wrap);
 
+    } else if (step === 'pomade-request') {
+      const { wrap, body, footer } = flowWrap({ step: 0, total: 3, title: 'Take Control of Your Keys', subtitle: 'Bring the pieces of your key back together and keep it yourself.', onBack });
+      body.appendChild(badge('info', '🧩', 'Your key is currently in pieces',
+        'When you signed up, your key was split across independent signer services so no one of them could use it. Recovering it asks each of them for their share and reassembles the key here, in your browser.'));
+      body.appendChild(badge('warning', '📧', 'We will email you first',
+        `Being signed in is not proof this account is yours, so the signers will each email a code to ${pomadeState?.email || 'your address'} before handing anything over. Expect one email per signer.`));
+      if (!pomadeState) {
+        body.appendChild(badge('danger', '✗', 'Session details are missing',
+          'Recovery needs to know which signers hold your shares, and that record is gone from this tab. Sign in with your email again, then try from the fresh session.'));
+      }
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Cancel', 'ghost', onBack, busy));
+      footer.appendChild(btn(busy ? 'Sending…' : 'Email My Recovery Codes', 'primary', () => requestRecoveryCodes(render), busy || !pomadeState));
+      container.appendChild(wrap);
+
+    } else if (step === 'pomade-codes') {
+      const ok = () => parseCodes(codesVal).length >= recoverThreshold && !busy;
+      const { wrap, body, footer } = flowWrap({ step: 1, total: 3, title: 'Enter Your Recovery Codes', subtitle: `Each signer emails its own code. Paste them all — ${recoverThreshold} is enough.`, onBack: () => { step = 'pomade-request'; codesVal = ''; errMsg = ''; render(); } });
+      const cf = field('Recovery codes', 'Paste your codes here — one per line', codesVal, v => { codesVal = v; errMsg = ''; goBtn.disabled = !ok(); }, { mono: true, rows: 4 });
+      const goBtn = btn(busy ? 'Recovering…' : 'Recover My Key', 'primary', () => recoverKey(render), !ok());
+      body.appendChild(cf.wrap);
+      body.appendChild(badge('warning', '🔑', 'Your private key is about to be shown',
+        'Anyone who sees it gains full control of your account. Make sure no one is watching your screen, and only save it somewhere private.'));
+      body.appendChild(h('div', { class: 'mill-hint' },
+        'No codes arriving? Signers only email an address that was confirmed at sign-up, and they never say so either way. Check the spam folder, then send a new set.'));
+      if (errMsg) body.appendChild(badge('danger', '✗', null, errMsg));
+      footer.appendChild(btn('Back', 'ghost', () => { step = 'pomade-request'; codesVal = ''; errMsg = ''; render(); }, busy));
+      footer.appendChild(goBtn);
+      container.appendChild(wrap);
+
     } else {
       const nsec = hexToNsec(privHex);
-      const { wrap, body, footer } = flowWrap({ step: 1, total: 2, title: 'Your Keys', subtitle: 'This is your account. Save it somewhere only you control.', onBack: () => { step = 'auth'; pw = ''; privHex = ''; render(); } });
+      const backToAuth = () => { step = isPomade ? 'pomade-request' : 'auth'; pw = ''; privHex = ''; codesVal = ''; errMsg = ''; render(); };
+      const { wrap, body, footer } = flowWrap({ step: isPomade ? 2 : 1, total: isPomade ? 3 : 2, title: 'Your Keys', subtitle: 'This is your account. Save it somewhere only you control.', onBack: backToAuth });
       body.appendChild(keyDisplay('Private Key (nsec) — KEEP SECRET', nsec, true));
       if (result?.pubkey) body.appendChild(keyDisplay('Public Key (npub) — safe to share', hexToNpub(result.pubkey)));
 
       if (isCloud) {
         body.appendChild(badge('info', '☁️', 'Your cloud backup still exists', 'A copy of this key is still encrypted in your Google Drive so you can keep signing in with Google. Saving your nsec here is an additional, portable copy — it does not remove the cloud one.'));
+      }
+      if (isPomade) {
+        body.appendChild(badge('info', '🧩', 'Your email login still works', 'The signer services still hold their shares, so you can keep signing in with your email and password. This is an additional, portable copy — recovering it took nothing away.'));
       }
 
       body.appendChild(h('div', { class: 'mill-divider' }));
@@ -2605,10 +3019,14 @@ class NostrSignerElement extends HTMLElement {
       }));
     } else if (this._state.connected) {
       body.appendChild(renderConnectedScreen(this._state.connected, () => {
+        // Deliberately not part of disconnect(): retiring the session on a
+        // remote service is a network call and an explicit act, whereas
+        // disconnect() also runs when the element merely leaves the DOM.
+        try { this._state.connected?.signer?.deactivate?.(); } catch {}
         try { this._state.connected?.signer?.disconnect?.(); } catch {}
         // Switching accounts: drop persisted restore state so a later
         // MILL.restore() can't rebuild the account we just left.
-        clearStoredNsec(); clearSignPerms(); clearBunkerState();
+        clearStoredNsec(); clearSignPerms(); clearBunkerState(); clearPomadeState();
         this._state.connected = null; this._state.method = null;
         this._dispatch('mill:disconnected', {});
         this._render();
@@ -2624,6 +3042,10 @@ class NostrSignerElement extends HTMLElement {
         nip55:      () => renderNIP55Flow(this, onDone, onBack),
         newkey:     () => renderNewKeypairFlow(this, onDone, onBack),
         google:     () => renderGoogleFlow(this, onDone, onBack),
+        pomade:     () => renderPomadeFlow(this, onDone, onBack),
+        // Entered from the "I'm new here" chooser, which skips straight to
+        // registration rather than showing a sign-in form first.
+        'pomade:signup': () => renderPomadeFlow(this, onDone, onBack, { signup: true }),
         _newhere:   () => renderNewHereChooser(this, id => { this._state.method = id; this._render(); }, onBack),
       };
       const flowFn = flowMap[this._state.method];
@@ -2681,6 +3103,13 @@ const MILL = {
     if (opts.amberCallback) el.setAttribute('amber-callback', opts.amberCallback);
     if (opts.oauthShim) el.setAttribute('oauth-shim', opts.oauthShim);
     if (opts.backupRelays) el.setAttribute('backup-relays', Array.isArray(opts.backupRelays) ? opts.backupRelays.join(',') : opts.backupRelays);
+    if (opts.pomade) {
+      const cfg = configurePomade(opts.pomade);
+      // Mirrored onto the element so the picker can gate on it the same way
+      // oauth-shim gates Google; the module reference can't travel this way,
+      // which is why the rest of the config lives in pomade.js.
+      if (cfg.signerUrls.length) el.setAttribute('pomade-signers', cfg.signerUrls.join(','));
+    }
     el.open(opts);
     return el;
   },
@@ -2740,6 +3169,19 @@ const MILL = {
         } catch { return null; }
       }
 
+      case 'pomade': {
+        const st = loadPomadeState();
+        if (!st?.clientOptions) return null;
+        if (pubkey && st.pubkey && st.pubkey.toLowerCase() !== pubkey.toLowerCase()) return null;
+        try {
+          // Needs @pomade/core again, so a host that restores before its first
+          // MILL.open() must have called MILL.configurePomade() already.
+          const { PomadeSigner } = await loadPomade(_imperativeEl);
+          const client = await pomadeClient(_imperativeEl, st.clientOptions);
+          return createPomadeSigner({ client, PomadeSigner, email: st.email, onDeactivate: pomadeDeactivate });
+        } catch { return null; }
+      }
+
       case 'nip55': {
         if (!pubkey) return null;
         const callbackUrl = _imperativeEl?.getAttribute?.('amber-callback') || null;
@@ -2757,6 +3199,25 @@ const MILL = {
     clearStoredNsec();
     clearSignPerms();
     clearBunkerState();
+    clearPomadeState();
+  },
+
+  /**
+   * Point mill at @pomade/core and its signer services, without opening the
+   * modal. MILL.open({ pomade }) does the same thing; call this directly when
+   * MILL.restore('pomade') has to run before the first open, since restoring a
+   * pomade session needs the module too.
+   *
+   * @param {{ signerUrls: string[]|string, module?: object|Promise<object>|function,
+   *           moduleUrl?: string, argonWorker?: any, threshold?: number, total?: number }} cfg
+   */
+  configurePomade(cfg = {}) {
+    const resolved = configurePomade(cfg);
+    // Mirrored onto the element only if one already exists. The flows read the
+    // config itself, so there is nothing to gain from forcing the element into
+    // existence — which would fail outright from a <head> script.
+    if (resolved.signerUrls.length && _imperativeEl) _imperativeEl.setAttribute('pomade-signers', resolved.signerUrls.join(','));
+    return resolved;
   },
 
   /** Apply a theme globally to the auto-created element. */
@@ -2788,7 +3249,7 @@ const MILL = {
   /** Low-level builders (advanced use). */
   signers: {
     createNIP07Signer, createNIP46Signer, createNIP55Signer,
-    createPrivateKeySigner, createReadOnlySigner,
+    createPrivateKeySigner, createReadOnlySigner, createPomadeSigner,
   },
 
   /** NIP-46 client class for advanced direct use. */
