@@ -43,7 +43,7 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
+- `MILL.open(options)` — options: `theme`, `methods`, `moreMethods`, `moreLabel`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -132,6 +132,30 @@ MILL.open({
   onClose: () => console.log('modal closed'),
 });
 ```
+
+---
+
+## Choosing which methods show
+
+`methods` is the main sign-in list, in the order you give (each entry a method id
+or an override object like `{ id, label, icon }`). `moreMethods` takes the same
+entries but tucks them into a collapsed **"More options"** disclosure below the
+main list, so you can enable a method without cluttering the primary choices.
+`moreLabel` renames that disclosure (default `"More options"`).
+
+```js
+MILL.open({
+  methods:     ['pomegranate', 'nip07'],              // main section, in this order
+  moreMethods: ['nip46', 'privatekey', 'readonly'],   // collapsed under "More options"
+  moreLabel:   'Advanced sign-in',                    // optional label
+});
+```
+
+Method ids: `nip07`, `nip46`, `nip55`, `privatekey`, `readonly`, `newkey`,
+`pomegranate`, `google`. A method listed in `moreMethods` is pulled out of the
+main list, so it never appears twice — even with the default `methods` you can
+push, say, `readonly` into the dropdown by naming it in `moreMethods` alone. Omit
+`methods` to keep the default main set; omit `moreMethods` for a single flat list.
 
 ---
 

@@ -907,14 +907,17 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const pomegranateAvailable = !!(host?._state?.pomegranate);
   const drivePinAvailable    = !!host?.getAttribute?.('oauth-shim');
   const googleAvailable      = pomegranateAvailable || drivePinAvailable;
+  // Turn a 'nip07' string or { id, label?, icon?, … } override into a full method
+  // definition. Unknown ids drop out.
+  const resolveEntry = entry => {
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    const base = METHODS_LIST.find(m => m.id === id);
+    if (!base) return null;
+    return typeof entry === 'object' ? { ...base, ...entry } : base;
+  };
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
   const resolved = explicit
-    ? methodFilter.map(entry => {
-        const id = typeof entry === 'string' ? entry : entry?.id;
-        const base = METHODS_LIST.find(m => m.id === id);
-        if (!base) return null;
-        return typeof entry === 'object' ? { ...base, ...entry } : base;
-      }).filter(Boolean)
+    ? methodFilter.map(resolveEntry).filter(Boolean)
     : METHODS_LIST.filter(m => {
         if (DEFAULT_HIDDEN_METHODS.has(m.id)) return false;
         if (m.id === 'pomegranate') return pomegranateAvailable;
@@ -922,11 +925,21 @@ function renderMethodSelection(host, onSelect, opts = {}) {
         return true;
       });
 
+  // A deployer can move some enabled methods into a collapsed "More options"
+  // section (opts.moreMethods, same entry shape as methods). They're pulled out
+  // of the main list so a method never appears in both.
+  const moreFilter   = opts.moreMethods;
+  const moreResolved = (Array.isArray(moreFilter) && moreFilter.length)
+    ? moreFilter.map(resolveEntry).filter(Boolean)
+    : [];
+  const moreIds      = new Set(moreResolved.map(m => m.id));
+  const mainResolved = moreIds.size ? resolved.filter(m => !moreIds.has(m.id)) : resolved;
+
   // Callout: when not explicit AND callout id is enabled and present, separate it out.
   // When the consumer explicitly orders methods, respect their order (no separation) unless callout was explicitly set.
   const calloutEnabled = calloutId && (!explicit || opts.callout !== undefined);
-  const calloutEntry   = calloutEnabled ? resolved.find(m => m.id === calloutId) : null;
-  const signInList     = calloutEntry ? resolved.filter(m => m.id !== calloutId) : resolved;
+  const calloutEntry   = calloutEnabled ? mainResolved.find(m => m.id === calloutId) : null;
+  const signInList     = calloutEntry ? mainResolved.filter(m => m.id !== calloutId) : mainResolved;
 
   if (calloutEntry) {
     // When Google login is configured, "I'm new here" opens a chooser
@@ -962,28 +975,22 @@ function renderMethodSelection(host, onSelect, opts = {}) {
 
   const isCompact = density === 'compact';
   const isGrid    = layout === 'grid';
+  const listStyle = () => isGrid
+    ? { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: isCompact ? '8px' : '10px' }
+    : { display: 'flex', flexDirection: 'column', gap: isCompact ? '6px' : '10px' };
 
-  const list = h('div', {
-    style: isGrid
-      ? { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: isCompact ? '8px' : '10px' }
-      : { display: 'flex', flexDirection: 'column', gap: isCompact ? '6px' : '10px' },
-  });
-
-  signInList.forEach(m => {
+  // Build one method card. Shared by the main list and the "More options" section.
+  const makeCard = m => {
     const card = h('button', {
       class: 'mill-method-card',
       style: isCompact ? { padding: '10px 12px', gap: '10px' } : {},
       onClick: () => onSelect(m.id),
     });
-
-    // Icon
-    const iconEl = h('div', {
+    card.appendChild(h('div', {
       class: 'mill-method-icon',
       style: isCompact ? { width: '32px', height: '32px', fontSize: '16px', flexShrink: '0' } : {},
-    }, iconNode(m.icon, isCompact ? 18 : 24));
-    card.appendChild(iconEl);
+    }, iconNode(m.icon, isCompact ? 18 : 24)));
 
-    // Middle: name (+ sub label inline if comfortable, or hidden if compact)
     const mid = h('div', { style: { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '2px' } });
     const nameRow = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'baseline', flexWrap: 'wrap' } });
     nameRow.appendChild(h('span', { class: 'mill-method-name', style: isCompact ? { fontSize: '13.5px' } : {} }, m.label));
@@ -992,7 +999,6 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     if (!isCompact && !isGrid && m.desc) mid.appendChild(h('div', { class: 'mill-method-desc' }, m.desc));
     card.appendChild(mid);
 
-    // Right: security badge (only in comfortable list mode); arrow always
     const right = h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', flexShrink: '0' } });
     if (!isCompact && !isGrid) {
       const secBadge = h('span', { class: 'mill-method-badge' }, m.secLabel);
@@ -1003,10 +1009,32 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     }
     right.appendChild(h('span', { class: 'mill-arrow' }, '→'));
     card.appendChild(right);
+    return card;
+  };
 
-    list.appendChild(card);
-  });
+  const list = h('div', { style: listStyle() });
+  signInList.forEach(m => list.appendChild(makeCard(m)));
   wrap.appendChild(list);
+
+  // "More options" — a deployer-populated, collapsed-by-default section. Pure DOM
+  // toggle (no re-render needed here).
+  if (moreResolved.length) {
+    const moreLabel = typeof opts.moreLabel === 'string' && opts.moreLabel ? opts.moreLabel : 'More options';
+    const shownDisplay = isGrid ? 'grid' : 'flex';
+    // Start collapsed. Toggle `display` directly — the list style already sets an
+    // inline `display`, which would override the [hidden] attribute.
+    const moreList = h('div', { style: { ...listStyle(), marginTop: '10px', display: 'none' } });
+    moreResolved.forEach(m => moreList.appendChild(makeCard(m)));
+    const caret = h('span', {}, '▸');
+    const toggle = h('button', {
+      class: 'mill-method-more', type: 'button',
+      style: { marginTop: '12px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'none', border: 'none', color: 'var(--mill-text-secondary)', font: 'inherit', fontSize: '12.5px', fontWeight: '600', cursor: 'pointer', padding: '6px' },
+      onClick: () => { const willOpen = moreList.style.display === 'none'; moreList.style.display = willOpen ? shownDisplay : 'none'; caret.textContent = willOpen ? '▾' : '▸'; },
+    });
+    toggle.appendChild(caret); toggle.appendChild(h('span', {}, moreLabel));
+    wrap.appendChild(toggle);
+    wrap.appendChild(moreList);
+  }
 
   // Picker tip. `opts.tip === false` hides it; a string overrides it; undefined
   // shows the default recommendation.
@@ -2980,6 +3008,8 @@ class NostrSignerElement extends HTMLElement {
     // can pass theme: 'dark' explicitly.
     if (opts.theme)       this._applyTheme(opts.theme);
     this._state.methodFilter = opts.methods;            // undefined → defaults
+    this._state.moreMethods  = opts.moreMethods;        // methods to tuck under a "More options" disclosure
+    this._state.moreLabel    = opts.moreLabel;          // label for that disclosure (default "More options")
     this._state.density      = opts.density;            // undefined → comfortable
     this._state.layout       = opts.layout;             // undefined → list
     this._state.callout      = 'callout' in opts ? opts.callout : undefined;  // undefined → 'newkey'
@@ -3161,6 +3191,8 @@ class NostrSignerElement extends HTMLElement {
         this._state.method = id; this._render();
       }, {
         methodFilter: this._state.methodFilter,
+        moreMethods:  this._state.moreMethods,
+        moreLabel:    this._state.moreLabel,
         density:      this._state.density,
         layout:       this._state.layout,
         callout:      this._state.callout,
