@@ -33,6 +33,8 @@ export const MILL_CSS_VARS = [
   '--mill-border-width',
   '--mill-border-style',
   '--mill-shadow',
+  '--mill-glow',
+  '--mill-overlay-blur',
   '--mill-font',
   '--mill-font-mono',
 ];
@@ -68,6 +70,8 @@ export const THEMES = {
     '--mill-border-width':   '1px',
     '--mill-border-style':   'solid',
     '--mill-shadow':         '0 0 0 1px rgba(130,80,255,0.08), 0 24px 64px rgba(0,0,0,0.7), 0 0 80px oklch(0.67 0.28 282 / 0.06)',
+    '--mill-glow':           'var(--mill-accent)',
+    '--mill-overlay-blur':   '5px',
     '--mill-font':           "'Space Grotesk', 'DM Sans', system-ui, sans-serif",
     '--mill-font-mono':      "'JetBrains Mono', 'Fira Code', monospace",
   },
@@ -100,6 +104,8 @@ export const THEMES = {
     '--mill-border-width':   '1px',
     '--mill-border-style':   'solid',
     '--mill-shadow':         '0 8px 32px rgba(60,40,120,0.18)',
+    '--mill-glow':           'var(--mill-accent)',
+    '--mill-overlay-blur':   '4px',
     '--mill-font':           "'Space Grotesk', 'DM Sans', system-ui, sans-serif",
     '--mill-font-mono':      "'JetBrains Mono', 'Fira Code', monospace",
   },
@@ -132,6 +138,8 @@ export const THEMES = {
     '--mill-border-width':   '1px',
     '--mill-border-style':   'solid',
     '--mill-shadow':         '0 8px 24px rgba(0,0,0,0.10)',
+    '--mill-glow':           'var(--mill-accent)',
+    '--mill-overlay-blur':   '3px',
     '--mill-font':           "'Inter', system-ui, sans-serif",
     '--mill-font-mono':      "'IBM Plex Mono', monospace",
   },
@@ -165,14 +173,53 @@ export const THEMES = {
     '--mill-border-width':   '1px',
     '--mill-border-style':   'solid',
     '--mill-shadow':         '0 0 0 1px rgba(120,200,140,0.10), 0 24px 64px rgba(0,0,0,0.7), 0 0 80px oklch(0.7 0.22 142 / 0.06)',
+    '--mill-glow':           'var(--mill-accent)',
+    '--mill-overlay-blur':   '5px',
     '--mill-font':           "'Space Grotesk', system-ui, sans-serif",
     '--mill-font-mono':      "'JetBrains Mono', monospace",
+  },
+
+  // Native / basic — deliberately unstyled: system font, square corners, no
+  // shadows/glows/blur, plain gray borders, classic link-blue accent. Looks like
+  // plain browser HTML. (grain ships with this as its default.)
+  native: {
+    '--mill-bg':             '#ffffff',
+    '--mill-surface':        '#ffffff',
+    '--mill-card':           '#ffffff',
+    '--mill-card-hover':     '#f2f2f2',
+    '--mill-inset':          '#f2f2f2',
+    '--mill-inset-strong':   '#e6e6e6',
+    '--mill-overlay':        'rgba(0,0,0,0.5)',
+    '--mill-border':         '#767676',
+    '--mill-border-light':   '#767676',
+    '--mill-accent':         '#0000ee',
+    '--mill-accent-hover':   '#0000cc',
+    '--mill-accent-dim':     '#eeeeff',
+    '--mill-teal':           '#008080',
+    '--mill-teal-dim':       '#e0f0f0',
+    '--mill-text':           '#000000',
+    '--mill-text-secondary': '#333333',
+    '--mill-muted':          '#666666',
+    '--mill-danger':         '#cc0000',
+    '--mill-danger-dim':     '#ffe6e6',
+    '--mill-warning':        '#8a6d00',
+    '--mill-warning-dim':    '#fff4d6',
+    '--mill-success':        '#0a7a28',
+    '--mill-success-dim':    '#e2f6e6',
+    '--mill-radius':         '0px',
+    '--mill-border-width':   '1px',
+    '--mill-border-style':   'solid',
+    '--mill-shadow':         'none',
+    '--mill-glow':           'transparent',
+    '--mill-overlay-blur':   '0px',
+    '--mill-font':           'system-ui, sans-serif',
+    '--mill-font-mono':      'monospace',
   },
 };
 
 /**
  * Apply a theme to a target element (defaults to :host of shadow DOM or document.documentElement).
- * @param {string|object} theme  - Built-in name ('dark','light','minimal','grain') or partial token object
+ * @param {string|object} theme  - Built-in name ('dark','light','minimal','grain','native') or partial token object
  * @param {HTMLElement}   target - Where to apply CSS vars (default: document.documentElement)
  */
 export function applyTheme(theme, target = document.documentElement) {

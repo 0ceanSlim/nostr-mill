@@ -154,6 +154,8 @@ const BASE_CSS = `
     --mill-border-width:   1px;
     --mill-border-style:   solid;
     --mill-shadow:         0 0 0 1px rgba(130,80,255,0.08), 0 24px 64px rgba(0,0,0,0.7), 0 0 80px oklch(0.67 0.28 282 / 0.06);
+    --mill-glow:           var(--mill-accent);   /* accent glow color; set transparent for a flat/native look */
+    --mill-overlay-blur:   5px;                  /* backdrop blur behind the modal; 0 for flat/native */
     --mill-font:           'Space Grotesk', system-ui, sans-serif;
     --mill-font-mono:      'JetBrains Mono', monospace;
     font-family: var(--mill-font);
@@ -166,7 +168,7 @@ const BASE_CSS = `
   .mill-overlay {
     position: fixed; inset: 0;
     background: var(--mill-overlay);
-    backdrop-filter: blur(5px);
+    backdrop-filter: blur(var(--mill-overlay-blur));
     display: flex; align-items: center; justify-content: center;
     padding: 20px;
     z-index: 9999;
@@ -176,7 +178,7 @@ const BASE_CSS = `
     width: 100%; max-width: 480px;
     background: var(--mill-surface);
     border: var(--mill-border-width) var(--mill-border-style) var(--mill-border-light);
-    border-radius: calc(var(--mill-radius) + 4px);
+    border-radius: var(--mill-radius);
     box-shadow: var(--mill-shadow);
     overflow: hidden;
     max-height: 92vh;
@@ -193,7 +195,7 @@ const BASE_CSS = `
   .mill-header-dot {
     width: 6px; height: 6px; border-radius: 50%;
     background: var(--mill-accent);
-    box-shadow: 0 0 8px var(--mill-accent);
+    box-shadow: 0 0 8px var(--mill-glow);
     margin-right: 8px; display: inline-block;
   }
   .mill-header-label {
@@ -202,7 +204,7 @@ const BASE_CSS = `
   }
   .mill-close {
     background: none; border: none; cursor: pointer; font-size: 18px;
-    color: var(--mill-muted); padding: 2px 6px; border-radius: 6px;
+    color: var(--mill-muted); padding: 2px 6px; border-radius: var(--mill-radius);
     font-family: var(--mill-font); line-height: 1;
     transition: color 0.15s;
   }
@@ -238,7 +240,7 @@ const BASE_CSS = `
 
   /* ─ Badge ─ */
   .mill-badge {
-    border-radius: 10px; padding: 10px 14px;
+    border-radius: var(--mill-radius); padding: 10px 14px;
     font-size: 13px; line-height: 1.55;
     display: flex; gap: 10px; align-items: flex-start;
   }
@@ -262,7 +264,7 @@ const BASE_CSS = `
   .mill-input, .mill-textarea {
     background: var(--mill-inset);
     border: 1px solid var(--mill-border);
-    border-radius: 10px; padding: 11px 14px;
+    border-radius: var(--mill-radius); padding: 11px 14px;
     color: var(--mill-text); font-size: 13px;
     font-family: var(--mill-font); outline: none; width: 100%; resize: vertical;
     transition: border-color 0.15s;
@@ -276,7 +278,7 @@ const BASE_CSS = `
 
   /* ─ Buttons ─ */
   .mill-btn {
-    border-radius: 10px; padding: 11px 20px; font-size: 14px; font-weight: 600;
+    border-radius: var(--mill-radius); padding: 11px 20px; font-size: 14px; font-weight: 600;
     font-family: var(--mill-font); cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     transition: opacity 0.15s, filter 0.15s; border: 1px solid transparent;
@@ -298,7 +300,7 @@ const BASE_CSS = `
   /* ─ Key display ─ */
   .mill-key-box {
     background: var(--mill-inset-strong); border: 1px solid var(--mill-border);
-    border-radius: 10px; padding: 10px 14px;
+    border-radius: var(--mill-radius); padding: 10px 14px;
   }
   .mill-key-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
@@ -313,7 +315,7 @@ const BASE_CSS = `
   }
   .mill-key-value.redacted {
     color: transparent;
-    text-shadow: 0 0 10px var(--mill-accent);
+    text-shadow: 0 0 10px var(--mill-glow);
     user-select: none;
   }
   .mill-key-actions { display: flex; gap: 5px; flex-shrink: 0; margin-top: 2px; }
@@ -328,10 +330,10 @@ const BASE_CSS = `
   /* ─ Tab bar ─ */
   .mill-tabs {
     display: flex; background: var(--mill-inset);
-    border-radius: 10px; padding: 4px; gap: 4px;
+    border-radius: var(--mill-radius); padding: 4px; gap: 4px;
   }
   .mill-tab {
-    flex: 1; padding: 8px 0; border-radius: 8px; font-size: 13px; font-weight: 600;
+    flex: 1; padding: 8px 0; border-radius: var(--mill-radius); font-size: 13px; font-weight: 600;
     cursor: pointer; font-family: var(--mill-font);
     background: transparent; border: 1px solid transparent;
     color: var(--mill-muted); transition: all 0.15s;
@@ -345,7 +347,7 @@ const BASE_CSS = `
   /* ─ Perm pill ─ */
   .mill-perm-pill { display: flex; gap: 3px; }
   .mill-perm-opt {
-    padding: 4px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600;
+    padding: 4px 10px; border-radius: var(--mill-radius); font-size: 11.5px; font-weight: 600;
     cursor: pointer; font-family: var(--mill-font); border: 1px solid var(--mill-border);
     color: var(--mill-muted); background: transparent; transition: all 0.15s;
   }
@@ -353,7 +355,7 @@ const BASE_CSS = `
   /* ─ Check item ─ */
   .mill-check-item {
     display: flex; gap: 12px; align-items: flex-start;
-    padding: 12px 14px; border-radius: 10px; cursor: pointer;
+    padding: 12px 14px; border-radius: var(--mill-radius); cursor: pointer;
     background: var(--mill-inset); border: 1px solid var(--mill-border);
     transition: all 0.15s;
   }
@@ -362,7 +364,7 @@ const BASE_CSS = `
     border-color: var(--mill-success);
   }
   .mill-check-box {
-    width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;
+    width: 18px; height: 18px; border-radius: var(--mill-radius); flex-shrink: 0;
     margin-top: 1px; display: flex; align-items: center; justify-content: center;
     font-size: 11px; color: #fff; transition: all 0.15s;
     background: transparent; border: 2px solid var(--mill-border-light);
@@ -375,7 +377,7 @@ const BASE_CSS = `
   .mill-method-card {
     display: flex; align-items: center; gap: 14px;
     padding: 14px 16px; background: var(--mill-card);
-    border: 1px solid var(--mill-border); border-radius: 12px;
+    border: 1px solid var(--mill-border); border-radius: var(--mill-radius);
     cursor: pointer; text-align: left; width: 100%;
     transition: all 0.15s; font-family: var(--mill-font);
   }
@@ -384,7 +386,7 @@ const BASE_CSS = `
     border-color: var(--mill-border-light);
   }
   .mill-method-icon {
-    width: 42px; height: 42px; border-radius: 10px;
+    width: 42px; height: 42px; border-radius: var(--mill-radius);
     background: var(--mill-inset); border: 1px solid var(--mill-border);
     display: flex; align-items: center; justify-content: center;
     font-size: 20px; flex-shrink: 0;
@@ -393,7 +395,7 @@ const BASE_CSS = `
   .mill-method-sub   { font-size: 11px; color: var(--mill-muted); font-family: var(--mill-font-mono); }
   .mill-method-desc  { font-size: 12px; color: var(--mill-text-secondary); line-height: 1.5; margin-top: 2px; }
   .mill-method-badge {
-    font-size: 11px; font-weight: 600; border-radius: 20px;
+    font-size: 11px; font-weight: 600; border-radius: var(--mill-radius);
     padding: 2px 8px; white-space: nowrap; border: 1px solid transparent;
   }
   .mill-arrow { font-size: 16px; color: var(--mill-muted); }
@@ -420,7 +422,7 @@ const BASE_CSS = `
     padding: 12px 14px;
     background: var(--mill-inset);
     border: 1px solid var(--mill-border);
-    border-radius: 10px;
+    border-radius: var(--mill-radius);
   }
   .mill-perm-summary-text { flex: 1; min-width: 0; }
   .mill-perm-summary-title {
@@ -434,7 +436,7 @@ const BASE_CSS = `
     background: none; border: 1px solid var(--mill-border-light);
     color: var(--mill-text-secondary);
     font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
-    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    padding: 6px 12px; border-radius: var(--mill-radius); cursor: pointer;
     flex-shrink: 0; transition: all 0.15s; white-space: nowrap;
   }
   .mill-perm-toggle:hover { color: var(--mill-text); border-color: var(--mill-accent); }
@@ -452,7 +454,7 @@ const BASE_CSS = `
     gap: 10px; padding: 9px 12px;
     background: var(--mill-inset);
     border: 1px solid var(--mill-border);
-    border-radius: 10px;
+    border-radius: var(--mill-radius);
   }
   .mill-perm-row-left {
     display: flex; gap: 9px; align-items: center; min-width: 0;
@@ -463,11 +465,11 @@ const BASE_CSS = `
   }
   .mill-perm-pills {
     display: flex; gap: 3px; flex-shrink: 0;
-    background: var(--mill-inset); border-radius: 20px; padding: 3px;
+    background: var(--mill-inset); border-radius: var(--mill-radius); padding: 3px;
   }
   .mill-perm-pill {
     display: flex; align-items: center; gap: 4px;
-    padding: 4px 11px; border-radius: 16px;
+    padding: 4px 11px; border-radius: var(--mill-radius);
     font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
     border: 1px solid transparent; cursor: pointer;
     transition: all 0.15s; white-space: nowrap;
@@ -477,7 +479,7 @@ const BASE_CSS = `
   /* ─ Signing consent card ─ */
   .mill-consent-head {
     display: flex; align-items: flex-start; gap: 12px;
-    padding: 14px; border-radius: 12px;
+    padding: 14px; border-radius: var(--mill-radius);
     background: var(--mill-inset); border: 1px solid var(--mill-border);
   }
   .mill-consent-icon { font-size: 26px; line-height: 1; flex-shrink: 0; }
@@ -498,7 +500,7 @@ const BASE_CSS = `
 
   .mill-consent-details {
     background: var(--mill-inset); border: 1px solid var(--mill-border);
-    border-radius: 10px; overflow: hidden;
+    border-radius: var(--mill-radius); overflow: hidden;
   }
   .mill-consent-field {
     display: flex; gap: 10px; padding: 8px 12px;
@@ -522,7 +524,7 @@ const BASE_CSS = `
   }
   .mill-consent-durations { display: flex; flex-wrap: wrap; gap: 5px; }
   .mill-consent-dur {
-    padding: 5px 11px; border-radius: 16px;
+    padding: 5px 11px; border-radius: var(--mill-radius);
     font-family: var(--mill-font); font-size: 11.5px; font-weight: 600;
     border: 1px solid var(--mill-border); background: transparent;
     color: var(--mill-muted); cursor: pointer; transition: all 0.15s;
@@ -544,7 +546,7 @@ const BASE_CSS = `
     display: flex; align-items: center; justify-content: space-between;
     gap: 10px; padding: 9px 12px;
     background: var(--mill-inset); border: 1px solid var(--mill-border);
-    border-radius: 10px;
+    border-radius: var(--mill-radius);
   }
   .mill-grant-left { min-width: 0; }
   .mill-grant-kind { font-size: 13px; font-weight: 500; }
@@ -553,7 +555,7 @@ const BASE_CSS = `
   }
   .mill-grant-actions { display: flex; gap: 4px; flex-shrink: 0; }
   .mill-grant-btn {
-    padding: 4px 10px; border-radius: 14px;
+    padding: 4px 10px; border-radius: var(--mill-radius);
     font-family: var(--mill-font); font-size: 11px; font-weight: 600;
     border: 1px solid transparent; background: transparent;
     color: var(--mill-muted); cursor: pointer; transition: all 0.15s;
@@ -602,7 +604,7 @@ const BASE_CSS = `
   .mill-foot-attr:hover { color: var(--mill-text-secondary); }
   .mill-foot-attr-dot {
     width: 5px; height: 5px; border-radius: 50%;
-    background: var(--mill-accent); box-shadow: 0 0 6px var(--mill-accent);
+    background: var(--mill-accent); box-shadow: 0 0 6px var(--mill-glow);
     display: inline-block; flex-shrink: 0;
   }
 `;

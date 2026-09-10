@@ -258,8 +258,10 @@ nostr-signer {
 ### Built-in themes
 
 ```js
-// Named themes: 'dark' (default), 'light', 'minimal', 'grain'
-MILL.open({ theme: 'light' });
+// Named themes: 'dark' (default), 'light', 'minimal', 'grain', 'native'
+// 'native' is deliberately unstyled — system font, square corners, no shadows,
+// glows, or backdrop blur — for a plain browser-HTML look.
+MILL.open({ theme: 'native' });
 
 // Or pass a partial token object — merged onto the dark baseline
 MILL.open({
@@ -295,7 +297,10 @@ MILL.open({ theme: brandTheme({ accent: '#7c3aed', radius: '6px' }) });
 | `--mill-danger` | `oklch(0.65 0.24 15)` | Error / danger states |
 | `--mill-warning` | `oklch(0.78 0.18 65)` | Caution states |
 | `--mill-success` | `oklch(0.7 0.2 155)` | Success / positive states |
-| `--mill-radius` | `14px` | Base border radius |
+| `--mill-radius` | `14px` | Corner radius for all elements (set `0` for square) |
+| `--mill-shadow` | `0 24px 64px …` | Modal drop shadow (`none` to remove) |
+| `--mill-glow` | `var(--mill-accent)` | Accent glow color (`transparent` to remove) |
+| `--mill-overlay-blur` | `5px` | Backdrop blur behind the modal (`0` to remove) |
 | `--mill-font` | `'Space Grotesk', system-ui` | UI font stack |
 | `--mill-font-mono` | `'JetBrains Mono', monospace` | Monospace font stack |
 
