@@ -1081,41 +1081,44 @@ function detectPlatform() {
 // With no branding fields set, mill shows its own default header. As soon as any
 // of logo/title/message is provided, the block is fully the host's — no mill
 // wording leaks in. (`label` styles the modal's top strip, handled elsewhere.)
+// The picker's brand block. Every slot is independently editable via `header`
+// and each defaults on its own, so a host can change just one and keep the rest,
+// or hide any by passing '' (or false):
+//   header = { logo, eyebrow, title, message, align, logoHeight, gap, marginBottom }
+//   logo    — emoji/short text (rendered in a tile) or an image URL. '' hides it.
+//   eyebrow — small uppercase line by the logo (default "Nostr Signer").
+//   title   — big heading (default "Connect Your Account").
+//   message — description (default "Choose how to access …").
+//   align   — 'left' (default) | 'center'.  gap/marginBottom — spacing overrides.
 function renderBrandHeader(header) {
   const hd = header || {};
-  const custom = hd.logo || hd.title || hd.message;
   const align = hd.align === 'center' ? 'center' : 'left';
+  const pick = (v, def) => (v === undefined ? def : v);   // '' / false / null → hidden
+  const logo    = pick(hd.logo, '⚡');
+  const eyebrow = pick(hd.eyebrow, 'Nostr Signer');
+  const title   = pick(hd.title, 'Connect Your Account');
+  const message = pick(hd.message, 'Choose how to access this Nostr client. Each method has different security tradeoffs.');
+  const isImg   = logo && isImageUrl(logo);
+
   const hdr = h('div', { style: {
-    marginBottom: '22px', display: 'flex', flexDirection: 'column', gap: '10px',
+    marginBottom: hd.marginBottom || '22px', display: 'flex', flexDirection: 'column', gap: hd.gap || '6px',
     alignItems: align === 'center' ? 'center' : 'flex-start', textAlign: align,
   } });
+  const eyebrowEl = () => h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, eyebrow);
 
-  if (!custom) {
-    // Default mill header: small mark tile + eyebrow, heading, description.
-    const tile = h('div', { style: { width: '32px', height: '32px', borderRadius: '8px', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' } }, '⚡');
-    hdr.style.gap = '6px';
-    hdr.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
-      tile,
-      h('span', { style: { fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--mill-muted)', fontWeight: '600' } }, 'Nostr Signer'),
-    ));
-    hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700' } }, 'Connect Your Account'));
-    hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55' } },
-      'Choose how to access this Nostr client. Each method has different security tradeoffs.'));
-    return hdr;
+  if (isImg) {
+    const img = h('img', { src: logo.trim(), alt: title || '', style: { height: `${hd.logoHeight || 44}px`, maxWidth: '100%', objectFit: 'contain', display: 'block' } });
+    img.addEventListener('error', () => img.remove());   // no broken-image icon
+    hdr.appendChild(img);
+    if (eyebrow) hdr.appendChild(eyebrowEl());
+  } else if (logo || eyebrow) {
+    const row = h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } });
+    if (logo) row.appendChild(h('div', { style: { width: '32px', height: '32px', borderRadius: 'var(--mill-radius)', background: 'var(--mill-accent-dim)', border: '1px solid var(--mill-border-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: '0' } }, String(logo)));
+    if (eyebrow) row.appendChild(eyebrowEl());
+    hdr.appendChild(row);
   }
-
-  // Custom brand block.
-  if (hd.logo) {
-    if (isImageUrl(hd.logo)) {
-      const img = h('img', { src: hd.logo.trim(), alt: hd.title || '', style: { height: `${hd.logoHeight || 44}px`, maxWidth: '100%', objectFit: 'contain', display: 'block' } });
-      img.addEventListener('error', () => img.remove());   // no broken-image icon
-      hdr.appendChild(img);
-    } else {
-      hdr.appendChild(h('div', { style: { fontSize: '36px', lineHeight: '1' } }, String(hd.logo).trim()));
-    }
-  }
-  if (hd.title)   hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700' } }, hd.title));
-  if (hd.message) hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55', maxWidth: '340px' } }, hd.message));
+  if (title)   hdr.appendChild(h('div', { style: { fontSize: '22px', fontWeight: '700' } }, title));
+  if (message) hdr.appendChild(h('div', { style: { fontSize: '13px', color: 'var(--mill-text-secondary)', lineHeight: '1.55', maxWidth: align === 'center' ? '340px' : 'none' } }, message));
   return hdr;
 }
 

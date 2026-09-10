@@ -192,9 +192,12 @@ MILL.open({
   header: {
     logo: 'https://yourapp.com/logo.png',   // image URL (PNG/SVG/…) at natural size, or an emoji/short text
     logoHeight: 48,                          // px height for image logos (default 44)
-    title: 'YourApp',                        // main title
-    message: 'Your keys, your Nostr.',       // short line under the title
+    eyebrow: 'YOURAPP',                      // small uppercase line by the logo (default "Nostr Signer")
+    title: 'Sign in',                        // main heading (default "Connect Your Account")
+    message: 'Your keys, your Nostr.',       // description (default "Choose how to access …")
     align: 'center',                         // 'left' (default) | 'center'
+    gap: '8px',                              // spacing between header lines (default 6px)
+    marginBottom: '24px',                    // space below the header (default 22px)
     label: 'Secure Login',                   // the top strip eyebrow (default "Account Access"); '' hides it
   },
   tip: false,                                 // hide the "Not sure? …" line under the methods (or pass a string)
@@ -210,11 +213,13 @@ MILL.open({
 });
 ```
 
-Every field is optional. As soon as you set any of `logo` / `title` / `message`,
-the header becomes fully yours — no mill wording appears. Leave `header` unset and
-you get mill's default header. A broken image URL is dropped silently (no
+Every field is independent — set one and the rest keep their defaults. Pass `''`
+(or `false`) for any of `logo` / `eyebrow` / `title` / `message` to hide just that
+line (e.g. `{ eyebrow: '', message: '' }` for logo + title only). Leave `header`
+unset for mill's default block. A broken image URL is dropped silently (no
 broken-image icon). `label: ''` hides the top strip label (the close button
-stays); `tip: false` hides the recommendation line, or pass a string to replace it.
+stays); `tip: false` hides the recommendation line, or pass a string to replace
+it. `align: 'center'` centers the header; every corner follows `--mill-radius`.
 
 ## Footer (Terms / Privacy / attribution)
 
