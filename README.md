@@ -43,7 +43,7 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `moreMethods`, `moreLabel`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
+- `MILL.open(options)` — options: `theme`, `methods`, `moreMethods`, `moreLabel`, `platforms`, `platform`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -156,6 +156,30 @@ Method ids: `nip07`, `nip46`, `nip55`, `privatekey`, `readonly`, `newkey`,
 main list, so it never appears twice — even with the default `methods` you can
 push, say, `readonly` into the dropdown by naming it in `moreMethods` alone. Omit
 `methods` to keep the default main set; omit `moreMethods` for a single flat list.
+
+### Platform-specific layouts
+
+`platforms` is a per-platform override map, keyed by `desktop`, `android`, `ios`,
+or `mobile` (matches android or ios). mill detects the platform and shallow-merges
+the matching block over the base options, so you write one base config plus the
+overrides that differ. Any option can be overridden; method placement is the
+common one, e.g. put Amber (NIP-55) in the main list on Android and push the
+browser extension into "More options":
+
+```js
+MILL.open({
+  methods:     ['newkey', 'pomegranate', 'nip07'],   // desktop / base
+  moreMethods: ['nip46', 'privatekey', 'readonly', 'nip55'],
+  platforms: {
+    android: { methods: ['newkey', 'pomegranate', 'nip55'],   // Amber up front
+               moreMethods: ['nip46', 'nip07', 'privatekey', 'readonly'] },
+  },
+});
+```
+
+Detection is `navigator.userAgent` based (iPadOS is treated as `ios`). Pass
+`platform: 'android' | 'ios' | 'desktop'` to force one — useful for testing, and
+what `examples/playground.html` uses to preview each platform's layout.
 
 ---
 

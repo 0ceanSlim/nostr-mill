@@ -1053,6 +1053,19 @@ function renderMethodSelection(host, onSelect, opts = {}) {
 
 const isImageUrl = s => typeof s === 'string' && /^(https?:\/\/|\/|data:image\/)/.test(s.trim());
 
+// Best-effort platform detection for platform-specific layouts (opts.platforms).
+// Returns 'android' | 'ios' | 'desktop'. iPadOS reports as a Mac, so a
+// touch-capable Mac is treated as ios.
+function detectPlatform() {
+  try {
+    const ua = navigator.userAgent || '';
+    if (/android/i.test(ua)) return 'android';
+    if (/iphone|ipad|ipod/i.test(ua)) return 'ios';
+    if (/Macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1) return 'ios';
+    return 'desktop';
+  } catch { return 'desktop'; }
+}
+
 // The picker header / brand block.
 //
 // header = { logo?, logoHeight?, title?, message?, align?, label? }
@@ -3001,23 +3014,35 @@ class NostrSignerElement extends HTMLElement {
   setTheme(theme) { this._applyTheme(theme); }
 
   open(opts = {}) {
-    if (opts.onConnected) this._callbacks.onConnected = opts.onConnected;
-    if (opts.onClose)     this._callbacks.onClose     = opts.onClose;
+    // Platform-specific layouts: opts.platforms is a map keyed by 'desktop' |
+    // 'android' | 'ios' | 'mobile'. The matching block is shallow-merged over the
+    // base opts, so a deployer writes one base config plus per-platform overrides
+    // (e.g. Amber in the main list on Android, browser extension pushed to More).
+    // opts.platform forces a platform (handy for testing/preview); otherwise it's
+    // detected. 'mobile' matches android or ios when no exact block is given.
+    const platform = opts.platform || detectPlatform();
+    const pmap = opts.platforms || {};
+    const ov = pmap[platform] || (((platform === 'android' || platform === 'ios') && pmap.mobile) || {});
+    const eff = { ...opts, ...ov };
+    this._platform = platform;   // exposed for debugging/testing
+
+    if (eff.onConnected) this._callbacks.onConnected = eff.onConnected;
+    if (eff.onClose)      this._callbacks.onClose     = eff.onClose;
     // Always reset layout/methods/theme state per-open so callers don't inherit
     // values from previous opens. To clear a previous theme override, the caller
     // can pass theme: 'dark' explicitly.
-    if (opts.theme)       this._applyTheme(opts.theme);
-    this._state.methodFilter = opts.methods;            // undefined → defaults
-    this._state.moreMethods  = opts.moreMethods;        // methods to tuck under a "More options" disclosure
-    this._state.moreLabel    = opts.moreLabel;          // label for that disclosure (default "More options")
-    this._state.density      = opts.density;            // undefined → comfortable
-    this._state.layout       = opts.layout;             // undefined → list
-    this._state.callout      = 'callout' in opts ? opts.callout : undefined;  // undefined → 'newkey'
-    this._state.relays       = Array.isArray(opts.relays) && opts.relays.length ? opts.relays : undefined;
-    this._state.footer       = opts.footer;             // { text?, links?, attribution?, attributionHref? }
-    this._state.header       = opts.header;             // { logo?, logoHeight?, title?, message?, align?, label? }
-    this._state.tip          = 'tip' in opts ? opts.tip : undefined;   // string | false | undefined
-    this._state.pomegranate  = opts.pomegranate;        // { central, operators[], threshold?, relays? }
+    if (eff.theme)        this._applyTheme(eff.theme);
+    this._state.methodFilter = eff.methods;            // undefined → defaults
+    this._state.moreMethods  = eff.moreMethods;        // methods to tuck under a "More options" disclosure
+    this._state.moreLabel    = eff.moreLabel;          // label for that disclosure (default "More options")
+    this._state.density      = eff.density;            // undefined → comfortable
+    this._state.layout       = eff.layout;             // undefined → list
+    this._state.callout      = 'callout' in eff ? eff.callout : undefined;  // undefined → 'newkey'
+    this._state.relays       = Array.isArray(eff.relays) && eff.relays.length ? eff.relays : undefined;
+    this._state.footer       = eff.footer;             // { text?, links?, attribution?, attributionHref? }
+    this._state.header       = eff.header;             // { logo?, logoHeight?, title?, message?, align?, label? }
+    this._state.tip          = 'tip' in eff ? eff.tip : undefined;   // string | false | undefined
+    this._state.pomegranate  = eff.pomegranate;        // { central, operators[], threshold?, relays? }
     this._state.open      = true;
     this._state.method    = null;
     this._state.connected = null;

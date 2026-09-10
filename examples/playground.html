@@ -92,6 +92,12 @@
     </div>
 
     <div class="row">
+      <label>Platform (previews + authors a layout per platform)</label>
+      <select id="platform"><option value="desktop">desktop</option><option value="android">android</option><option value="ios">ios</option></select>
+      <p class="hint" style="margin:5px 0 0">Desktop is the base config. Arrange android/ios differently and they emit under <code>platforms</code>.</p>
+    </div>
+
+    <div class="row">
       <label>Toggles</label>
       <div class="checks">
         <label><input type="checkbox" id="callout" checked /> "I'm new here" callout</label>
@@ -102,7 +108,7 @@
     </div>
 
     <div class="row">
-      <label>Methods — Main / More / Off (↑↓ to reorder)</label>
+      <label>Methods for <span id="platLabel" style="color:#b9a6ff">desktop</span> — Main / More / Off (↑↓)</label>
       <div id="methods"></div>
     </div>
 
@@ -143,13 +149,21 @@
     { id: 'nip46', place: 'main' }, { id: 'privatekey', place: 'more' }, { id: 'readonly', place: 'more' },
     { id: 'nip55', place: 'off' },
   ];
-  let order = structuredClone(DEFAULT_ORDER);
+  const PLATFORMS = ['desktop', 'android', 'ios'];
+  const freshOrders = () => Object.fromEntries(PLATFORMS.map(p => [p, structuredClone(DEFAULT_ORDER)]));
+  let orders = freshOrders();
 
   const $ = id => document.getElementById(id);
+  const curPlat = () => $('platform').value;
+  const order = () => orders[curPlat()];
+  const bucket = (arr, place) => arr.filter(m => m.place === place).map(m => m.id);
+  const sameLists = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function renderMethodRows() {
+    $('platLabel').textContent = curPlat();
+    const arr = order();
     const box = $('methods'); box.innerHTML = '';
-    order.forEach((m, i) => {
+    arr.forEach((m, i) => {
       const row = document.createElement('div'); row.className = 'm-row';
       const name = document.createElement('div'); name.className = 'm-name'; name.textContent = METHOD_LABELS[m.id]; row.appendChild(name);
       const seg = document.createElement('div'); seg.className = 'seg';
@@ -160,8 +174,8 @@
       });
       row.appendChild(seg);
       const ord = document.createElement('div'); ord.className = 'ord';
-      const up = document.createElement('button'); up.textContent = '▲'; up.onclick = () => { if (i > 0) { [order[i-1], order[i]] = [order[i], order[i-1]]; renderMethodRows(); rerender(); } };
-      const dn = document.createElement('button'); dn.textContent = '▼'; dn.onclick = () => { if (i < order.length-1) { [order[i+1], order[i]] = [order[i], order[i+1]]; renderMethodRows(); rerender(); } };
+      const up = document.createElement('button'); up.textContent = '▲'; up.onclick = () => { if (i > 0) { [arr[i-1], arr[i]] = [arr[i], arr[i-1]]; renderMethodRows(); rerender(); } };
+      const dn = document.createElement('button'); dn.textContent = '▼'; dn.onclick = () => { if (i < arr.length-1) { [arr[i+1], arr[i]] = [arr[i], arr[i+1]]; renderMethodRows(); rerender(); } };
       ord.appendChild(up); ord.appendChild(dn); row.appendChild(ord);
       box.appendChild(row);
     });
@@ -170,52 +184,73 @@
   function buildConfig() {
     const themeVal = $('theme').value;
     const theme = THEME_PRESETS[themeVal] || themeVal;
-    const methods = order.filter(m => m.place === 'main').map(m => m.id);
-    const moreMethods = order.filter(m => m.place === 'more').map(m => m.id);
+    const base = orders.desktop;
     const cfg = {
       theme,
       layout: $('layout').value,
       density: $('density').value,
-      methods,
+      methods: bucket(base, 'main'),
       pomegranate: true,
       callout: $('callout').checked ? 'newkey' : false,
       tip: $('tip').checked ? undefined : false,
     };
-    if (moreMethods.length) { cfg.moreMethods = moreMethods; const lbl = $('moreLabel').value.trim(); if (lbl && lbl !== 'More options') cfg.moreLabel = lbl; }
+    const baseMore = bucket(base, 'more');
+    if (baseMore.length) { cfg.moreMethods = baseMore; const lbl = $('moreLabel').value.trim(); if (lbl && lbl !== 'More options') cfg.moreLabel = lbl; }
     if ($('header').checked) cfg.header = SAMPLE_HEADER;
     cfg.footer = $('footer').checked ? SAMPLE_FOOTER : { attribution: false };
+    // Per-platform overrides: only for platforms whose arrangement differs from desktop.
+    const platforms = {};
+    ['android', 'ios'].forEach(p => {
+      const main = bucket(orders[p], 'main'), more = bucket(orders[p], 'more');
+      if (!sameLists(main, cfg.methods) || !sameLists(more, baseMore)) {
+        platforms[p] = { methods: main };
+        if (more.length) platforms[p].moreMethods = more;
+      }
+    });
+    if (Object.keys(platforms).length) cfg.platforms = platforms;
     return { cfg, themeName: THEME_PRESETS[themeVal] ? null : themeVal };
   }
 
   function toCode(cfg, themeName) {
+    const arr = a => '[' + a.map(m => `'${m}'`).join(', ') + ']';
     const lines = ['MILL.open({'];
     lines.push('  theme: ' + (themeName ? `'${themeName}'` : '{ ' + Object.entries(cfg.theme).map(([k,v]) => `'${k}': '${v}'`).join(', ') + ' }') + ',');
     lines.push(`  layout: '${cfg.layout}',`);
     lines.push(`  density: '${cfg.density}',`);
-    lines.push('  methods: [' + cfg.methods.map(m => `'${m}'`).join(', ') + '],');
-    if (cfg.moreMethods) lines.push('  moreMethods: [' + cfg.moreMethods.map(m => `'${m}'`).join(', ') + '],');
+    lines.push('  methods: ' + arr(cfg.methods) + ',');
+    if (cfg.moreMethods) lines.push('  moreMethods: ' + arr(cfg.moreMethods) + ',');
     if (cfg.moreLabel) lines.push(`  moreLabel: '${cfg.moreLabel}',`);
     if (cfg.callout === false) lines.push('  callout: false,');
     if (cfg.tip === false) lines.push('  tip: false,');
     if (cfg.header) lines.push('  header: ' + JSON.stringify(cfg.header) + ',');
+    if (cfg.platforms) {
+      lines.push('  platforms: {');
+      for (const [p, o] of Object.entries(cfg.platforms)) {
+        const parts = ['methods: ' + arr(o.methods)];
+        if (o.moreMethods) parts.push('moreMethods: ' + arr(o.moreMethods));
+        lines.push(`    ${p}: { ${parts.join(', ')} },`);
+      }
+      lines.push('  },');
+    }
     lines.push('  pomegranate: true,');
     lines.push('  onConnected: (r) => console.log(r),');
     lines.push('});');
     return lines.join('\n');
   }
 
-  let last = '';
   function rerender() {
     const { cfg, themeName } = buildConfig();
     $('code').textContent = toCode(cfg, themeName);
-    window.MILL.open({ ...cfg, onConnected: r => console.log('connected', r) });
+    // `platform` forces detection so the preview shows the platform you're editing.
+    window.MILL.open({ ...cfg, platform: curPlat(), onConnected: r => console.log('connected', r) });
   }
 
   // wire controls
   ['theme','layout','density','moreLabel'].forEach(id => $(id).addEventListener('input', rerender));
   ['callout','tip','header','footer'].forEach(id => $(id).addEventListener('change', rerender));
+  $('platform').addEventListener('change', () => { renderMethodRows(); rerender(); });
   $('reopen').onclick = rerender;
-  $('reset').onclick = () => { order = structuredClone(DEFAULT_ORDER); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
+  $('reset').onclick = () => { orders = freshOrders(); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('platform').value='desktop'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
   $('copy').onclick = () => { navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent='Copied ✓'; setTimeout(()=>$('copy').textContent='Copy config',1500); }); };
 
   renderMethodRows();
