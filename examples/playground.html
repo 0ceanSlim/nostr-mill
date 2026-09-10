@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MILL — Layout Playground</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; font: 14px/1.5 system-ui, sans-serif;
+    background: #0b0a12; color: #e8e4f5;
+    background-image: radial-gradient(circle at 20% 20%, #1a1530 0, transparent 45%),
+                      radial-gradient(circle at 80% 80%, #131a2a 0, transparent 45%);
+  }
+  .intro { max-width: 620px; padding: 40px; }
+  .intro h1 { margin: 0 0 6px; font-size: 26px; }
+  .intro p { color: #a49ec5; margin: 0 0 4px; }
+  .intro code { background: #1c1830; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+  /* Controls float ABOVE the mill overlay (z-index 9999). */
+  .panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 340px; z-index: 100001;
+    background: #111019; border-left: 1px solid #2a2540; padding: 16px;
+    overflow-y: auto; box-shadow: -12px 0 40px rgba(0,0,0,0.5);
+  }
+  .panel h2 { margin: 0 0 2px; font-size: 15px; }
+  .panel .hint { color: #8a83ad; font-size: 11.5px; margin: 0 0 14px; }
+  .row { margin-bottom: 12px; }
+  .row > label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #8a83ad; margin-bottom: 5px; font-weight: 600; }
+  select, input[type=text] {
+    width: 100%; background: #1a1728; color: #e8e4f5; border: 1px solid #332c50;
+    border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px;
+  }
+  .checks { display: flex; flex-wrap: wrap; gap: 10px; }
+  .checks label { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: #cfc9e8; }
+
+  /* method rows */
+  .m-row { display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid #2a2540; border-radius: 8px; margin-bottom: 6px; background: #16132339; }
+  .m-row .m-name { flex: 1; font-size: 12.5px; min-width: 0; }
+  .m-row .seg { display: flex; border: 1px solid #332c50; border-radius: 6px; overflow: hidden; }
+  .m-row .seg button { border: 0; background: transparent; color: #8a83ad; font: inherit; font-size: 10.5px; padding: 3px 6px; cursor: pointer; }
+  .m-row .seg button.on { background: #6b4bff; color: #fff; }
+  .m-row .ord { display: flex; flex-direction: column; }
+  .m-row .ord button { border: 0; background: transparent; color: #6a6390; cursor: pointer; font-size: 9px; line-height: 1; padding: 1px 3px; }
+
+  .btnrow { display: flex; gap: 8px; margin: 8px 0 12px; }
+  .btnrow button { flex: 1; background: #6b4bff; color: #fff; border: 0; border-radius: 8px; padding: 9px; font: inherit; font-weight: 600; cursor: pointer; }
+  .btnrow button.ghost { background: #201b36; color: #cfc9e8; }
+
+  pre.code { background: #08070f; border: 1px solid #2a2540; border-radius: 8px; padding: 10px; font: 11.5px/1.55 'JetBrains Mono', ui-monospace, monospace; color: #b9b2e0; white-space: pre-wrap; word-break: break-word; margin: 0; max-height: 260px; overflow: auto; }
+  .copy { margin-top: 6px; width: 100%; background: #201b36; color: #cfc9e8; border: 0; border-radius: 8px; padding: 7px; font: inherit; font-size: 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <div class="intro">
+    <h1>MILL — Layout Playground</h1>
+    <p>Tweak the controls on the right. The signer re-opens live on every change.</p>
+    <p>Copy the <code>MILL.open({…})</code> config from the panel when you land on a layout you like.</p>
+    <p class="hint" style="color:#6a6390">Local scratch page. Not shipped in the package.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Layout Playground</h2>
+    <p class="hint">Controls float above the signer. Change anything to re-render.</p>
+
+    <div class="row">
+      <label>Theme</label>
+      <select id="theme">
+        <optgroup label="Built-in">
+          <option value="dark">dark</option>
+          <option value="light">light</option>
+          <option value="minimal">minimal</option>
+          <option value="grain">grain</option>
+        </optgroup>
+        <optgroup label="Custom presets">
+          <option value="hard-edge">hard-edge (flat dark)</option>
+          <option value="brutalist">brutalist</option>
+          <option value="terminal">terminal green</option>
+          <option value="soft">soft (rounded pastel)</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <div class="row">
+      <label>Layout</label>
+      <select id="layout"><option value="list">list</option><option value="grid">grid</option></select>
+    </div>
+    <div class="row">
+      <label>Density</label>
+      <select id="density"><option value="comfortable">comfortable</option><option value="compact">compact</option></select>
+    </div>
+
+    <div class="row">
+      <label>Toggles</label>
+      <div class="checks">
+        <label><input type="checkbox" id="callout" checked /> "I'm new here" callout</label>
+        <label><input type="checkbox" id="tip" checked /> tip line</label>
+        <label><input type="checkbox" id="header" /> sample header</label>
+        <label><input type="checkbox" id="footer" checked /> footer</label>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>Methods — Main / More / Off (↑↓ to reorder)</label>
+      <div id="methods"></div>
+    </div>
+
+    <div class="row">
+      <label>"More options" label</label>
+      <input type="text" id="moreLabel" value="More options" />
+    </div>
+
+    <div class="btnrow">
+      <button id="reopen">Reopen signer</button>
+      <button class="ghost" id="reset">Reset</button>
+    </div>
+
+    <div class="row">
+      <label>Config</label>
+      <pre class="code" id="code"></pre>
+      <button class="copy" id="copy">Copy config</button>
+    </div>
+  </div>
+
+<script src="../dist/mill.umd.js"></script>
+<script>
+  const THEME_PRESETS = {
+    'hard-edge': { '--mill-bg':'#111113','--mill-surface':'#17171a','--mill-card':'#202024','--mill-card-hover':'#2a2a30','--mill-border':'#444','--mill-border-light':'#666','--mill-accent':'#e6e6e6','--mill-accent-dim':'#2a2a30','--mill-teal':'#9aa','--mill-text':'#fff','--mill-text-secondary':'#bbb','--mill-muted':'#888','--mill-radius':'0px','--mill-shadow':'none','--mill-font':'system-ui, sans-serif','--mill-font-mono':'ui-monospace, monospace' },
+    'brutalist': { '--mill-bg':'#ffffff','--mill-surface':'#ffffff','--mill-card':'#ffffff','--mill-card-hover':'#f2f2f2','--mill-border':'#000000','--mill-border-light':'#000000','--mill-accent':'#000000','--mill-accent-dim':'#ffe600','--mill-teal':'#0000ff','--mill-text':'#000000','--mill-text-secondary':'#1a1a1a','--mill-muted':'#555555','--mill-radius':'0px','--mill-shadow':'6px 6px 0 #000000','--mill-font':"'Courier New', monospace",'--mill-font-mono':"'Courier New', monospace" },
+    'terminal': { '--mill-bg':'#000000','--mill-surface':'#020a02','--mill-card':'#031003','--mill-card-hover':'#062406','--mill-border':'#00ff00','--mill-border-light':'#00ff00','--mill-accent':'#00ff00','--mill-accent-dim':'#001a00','--mill-teal':'#00ffaa','--mill-text':'#00ff00','--mill-text-secondary':'#00aa00','--mill-muted':'#007700','--mill-radius':'0px','--mill-shadow':'none','--mill-font':"'JetBrains Mono', ui-monospace, monospace",'--mill-font-mono':"'JetBrains Mono', ui-monospace, monospace" },
+    'soft': { '--mill-bg':'#f6f4ff','--mill-surface':'#ffffff','--mill-card':'#faf9ff','--mill-card-hover':'#efeaff','--mill-border':'#e6e0f7','--mill-border-light':'#d3cbee','--mill-accent':'#7c5cff','--mill-accent-dim':'#efeaff','--mill-teal':'#3fb6c9','--mill-text':'#1a1633','--mill-text-secondary':'#5a5480','--mill-muted':'#9992b8','--mill-radius':'20px','--mill-shadow':'0 20px 60px rgba(124,92,255,0.20)','--mill-font':"'Inter', system-ui, sans-serif",'--mill-font-mono':"ui-monospace, monospace" },
+  };
+  const SAMPLE_HEADER = { logo: '🌾', title: 'Wheat', message: 'Sign in to the tavern.', align: 'center' };
+  const SAMPLE_FOOTER = { text: 'Your keys · Your data', links: [{ label: 'Terms', href: '#' }, { label: 'Privacy', href: '#' }], attribution: true };
+
+  const METHOD_LABELS = {
+    pomegranate: 'Google (pomegranate)', nip07: 'Browser Extension (NIP-07)', nip46: 'Remote Signer (NIP-46)',
+    nip55: 'Android Signer (NIP-55)', privatekey: 'Private Key', readonly: 'Read Only', newkey: 'New Identity',
+  };
+  const DEFAULT_ORDER = [
+    { id: 'newkey', place: 'main' }, { id: 'pomegranate', place: 'main' }, { id: 'nip07', place: 'main' },
+    { id: 'nip46', place: 'main' }, { id: 'privatekey', place: 'more' }, { id: 'readonly', place: 'more' },
+    { id: 'nip55', place: 'off' },
+  ];
+  let order = structuredClone(DEFAULT_ORDER);
+
+  const $ = id => document.getElementById(id);
+
+  function renderMethodRows() {
+    const box = $('methods'); box.innerHTML = '';
+    order.forEach((m, i) => {
+      const row = document.createElement('div'); row.className = 'm-row';
+      const name = document.createElement('div'); name.className = 'm-name'; name.textContent = METHOD_LABELS[m.id]; row.appendChild(name);
+      const seg = document.createElement('div'); seg.className = 'seg';
+      ['main', 'more', 'off'].forEach(p => {
+        const b = document.createElement('button'); b.textContent = p; if (m.place === p) b.className = 'on';
+        b.onclick = () => { m.place = p; renderMethodRows(); rerender(); };
+        seg.appendChild(b);
+      });
+      row.appendChild(seg);
+      const ord = document.createElement('div'); ord.className = 'ord';
+      const up = document.createElement('button'); up.textContent = '▲'; up.onclick = () => { if (i > 0) { [order[i-1], order[i]] = [order[i], order[i-1]]; renderMethodRows(); rerender(); } };
+      const dn = document.createElement('button'); dn.textContent = '▼'; dn.onclick = () => { if (i < order.length-1) { [order[i+1], order[i]] = [order[i], order[i+1]]; renderMethodRows(); rerender(); } };
+      ord.appendChild(up); ord.appendChild(dn); row.appendChild(ord);
+      box.appendChild(row);
+    });
+  }
+
+  function buildConfig() {
+    const themeVal = $('theme').value;
+    const theme = THEME_PRESETS[themeVal] || themeVal;
+    const methods = order.filter(m => m.place === 'main').map(m => m.id);
+    const moreMethods = order.filter(m => m.place === 'more').map(m => m.id);
+    const cfg = {
+      theme,
+      layout: $('layout').value,
+      density: $('density').value,
+      methods,
+      pomegranate: true,
+      callout: $('callout').checked ? 'newkey' : false,
+      tip: $('tip').checked ? undefined : false,
+    };
+    if (moreMethods.length) { cfg.moreMethods = moreMethods; const lbl = $('moreLabel').value.trim(); if (lbl && lbl !== 'More options') cfg.moreLabel = lbl; }
+    if ($('header').checked) cfg.header = SAMPLE_HEADER;
+    cfg.footer = $('footer').checked ? SAMPLE_FOOTER : { attribution: false };
+    return { cfg, themeName: THEME_PRESETS[themeVal] ? null : themeVal };
+  }
+
+  function toCode(cfg, themeName) {
+    const lines = ['MILL.open({'];
+    lines.push('  theme: ' + (themeName ? `'${themeName}'` : '{ ' + Object.entries(cfg.theme).map(([k,v]) => `'${k}': '${v}'`).join(', ') + ' }') + ',');
+    lines.push(`  layout: '${cfg.layout}',`);
+    lines.push(`  density: '${cfg.density}',`);
+    lines.push('  methods: [' + cfg.methods.map(m => `'${m}'`).join(', ') + '],');
+    if (cfg.moreMethods) lines.push('  moreMethods: [' + cfg.moreMethods.map(m => `'${m}'`).join(', ') + '],');
+    if (cfg.moreLabel) lines.push(`  moreLabel: '${cfg.moreLabel}',`);
+    if (cfg.callout === false) lines.push('  callout: false,');
+    if (cfg.tip === false) lines.push('  tip: false,');
+    if (cfg.header) lines.push('  header: ' + JSON.stringify(cfg.header) + ',');
+    lines.push('  pomegranate: true,');
+    lines.push('  onConnected: (r) => console.log(r),');
+    lines.push('});');
+    return lines.join('\n');
+  }
+
+  let last = '';
+  function rerender() {
+    const { cfg, themeName } = buildConfig();
+    $('code').textContent = toCode(cfg, themeName);
+    window.MILL.open({ ...cfg, onConnected: r => console.log('connected', r) });
+  }
+
+  // wire controls
+  ['theme','layout','density','moreLabel'].forEach(id => $(id).addEventListener('input', rerender));
+  ['callout','tip','header','footer'].forEach(id => $(id).addEventListener('change', rerender));
+  $('reopen').onclick = rerender;
+  $('reset').onclick = () => { order = structuredClone(DEFAULT_ORDER); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
+  $('copy').onclick = () => { navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent='Copied ✓'; setTimeout(()=>$('copy').textContent='Copy config',1500); }); };
+
+  renderMethodRows();
+  rerender();
+</script>
+</body>
+</html>
