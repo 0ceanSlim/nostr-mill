@@ -43,6 +43,14 @@
   .m-row .seg button.on { background: #6b4bff; color: #fff; }
   .m-row .ord { display: flex; flex-direction: column; }
   .m-row .ord button { border: 0; background: transparent; color: #6a6390; cursor: pointer; font-size: 9px; line-height: 1; padding: 1px 3px; }
+  .m-row .edit { border: 1px solid #332c50; border-radius: 6px; background: transparent; color: #8a83ad; cursor: pointer; font-size: 11px; padding: 3px 6px; }
+  .m-row .edit.on { background: #6b4bff; color: #fff; border-color: #6b4bff; }
+  .m-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: -2px 0 8px; padding: 8px; border: 1px dashed #332c50; border-radius: 8px; background: #141223; }
+  .m-edit label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #7a7398; display: block; margin-bottom: 3px; }
+  .m-edit input { width: 100%; background: #1a1728; color: #e8e4f5; border: 1px solid #332c50; border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 11.5px; }
+  .m-edit .cell.full { grid-column: 1 / -1; }
+  .m-edit .swatch { display: flex; gap: 6px; align-items: center; }
+  .m-edit .swatch input[type=color] { width: 30px; height: 28px; padding: 0; }
 
   .btnrow { display: flex; gap: 8px; margin: 8px 0 12px; }
   .btnrow button { flex: 1; background: #6b4bff; color: #fff; border: 0; border-radius: 8px; padding: 9px; font: inherit; font-weight: 600; cursor: pointer; }
@@ -153,6 +161,14 @@
   const PLATFORMS = ['desktop', 'android', 'ios'];
   const freshOrders = () => Object.fromEntries(PLATFORMS.map(p => [p, structuredClone(DEFAULT_ORDER)]));
   let orders = freshOrders();
+  // Per-method text/color overrides (global, applied wherever the method appears).
+  let mOver = {};                 // id -> { label?, sub?, secLabel?, secColor? }
+  const editOpen = new Set();     // ids whose inline editor is expanded
+  const setOver = (id, field, val) => {
+    mOver[id] = mOver[id] || {};
+    if (val.trim()) mOver[id][field] = val.trim(); else delete mOver[id][field];
+    if (!Object.keys(mOver[id]).length) delete mOver[id];
+  };
 
   const $ = id => document.getElementById(id);
   const curPlat = () => $('platform').value;
@@ -174,11 +190,41 @@
         seg.appendChild(b);
       });
       row.appendChild(seg);
+      const editBtn = document.createElement('button'); editBtn.className = 'edit' + (editOpen.has(m.id) ? ' on' : ''); editBtn.textContent = '✎'; editBtn.title = 'Edit label / badge / color';
+      editBtn.onclick = () => { editOpen.has(m.id) ? editOpen.delete(m.id) : editOpen.add(m.id); renderMethodRows(); };
+      row.appendChild(editBtn);
       const ord = document.createElement('div'); ord.className = 'ord';
       const up = document.createElement('button'); up.textContent = '▲'; up.onclick = () => { if (i > 0) { [arr[i-1], arr[i]] = [arr[i], arr[i-1]]; renderMethodRows(); rerender(); } };
       const dn = document.createElement('button'); dn.textContent = '▼'; dn.onclick = () => { if (i < arr.length-1) { [arr[i+1], arr[i]] = [arr[i], arr[i+1]]; renderMethodRows(); rerender(); } };
       ord.appendChild(up); ord.appendChild(dn); row.appendChild(ord);
       box.appendChild(row);
+
+      if (editOpen.has(m.id)) {
+        const ov = mOver[m.id] || {};
+        const panel = document.createElement('div'); panel.className = 'm-edit';
+        // onInput only rerender()s (updates preview + code) — NOT renderMethodRows,
+        // so the field you're typing in keeps focus.
+        const field = (labelText, fieldKey, ph, full) => {
+          const cell = document.createElement('div'); cell.className = 'cell' + (full ? ' full' : '');
+          cell.innerHTML = `<label>${labelText}</label>`;
+          const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = ph; inp.value = ov[fieldKey] || '';
+          inp.addEventListener('input', () => { setOver(m.id, fieldKey, inp.value); rerender(); });
+          cell.appendChild(inp); return cell;
+        };
+        panel.appendChild(field('Label', 'label', METHOD_LABELS[m.id]));
+        panel.appendChild(field('Sub-label', 'sub', 'e.g. Fastest'));
+        panel.appendChild(field('Badge text', 'secLabel', 'e.g. Recommended'));
+        // color: text (accepts hex / rgb / named / var()) + a native picker
+        const cc = document.createElement('div'); cc.className = 'cell';
+        cc.innerHTML = '<label>Badge color</label>';
+        const sw = document.createElement('div'); sw.className = 'swatch';
+        const ct = document.createElement('input'); ct.type = 'text'; ct.placeholder = '#22c55e or var(--mill-success)'; ct.value = ov.secColor || '';
+        const cp = document.createElement('input'); cp.type = 'color'; cp.value = /^#[0-9a-f]{6}$/i.test(ov.secColor || '') ? ov.secColor : '#22c55e';
+        ct.addEventListener('input', () => { setOver(m.id, 'secColor', ct.value); rerender(); });
+        cp.addEventListener('input', () => { ct.value = cp.value; setOver(m.id, 'secColor', cp.value); rerender(); });
+        sw.appendChild(cp); sw.appendChild(ct); cc.appendChild(sw); panel.appendChild(cc);
+        box.appendChild(panel);
+      }
     });
   }
 
@@ -209,6 +255,7 @@
       }
     });
     if (Object.keys(platforms).length) cfg.platforms = platforms;
+    if (Object.keys(mOver).length) cfg.methodOverrides = mOver;
     return { cfg, themeName: THEME_PRESETS[themeVal] ? null : themeVal };
   }
 
@@ -233,6 +280,13 @@
       }
       lines.push('  },');
     }
+    if (cfg.methodOverrides) {
+      lines.push('  methodOverrides: {');
+      for (const [id, o] of Object.entries(cfg.methodOverrides)) {
+        lines.push(`    ${id}: { ${Object.entries(o).map(([k,v]) => `${k}: '${v}'`).join(', ')} },`);
+      }
+      lines.push('  },');
+    }
     lines.push('  pomegranate: true,');
     lines.push('  onConnected: (r) => console.log(r),');
     lines.push('});');
@@ -251,7 +305,7 @@
   ['callout','tip','header','footer'].forEach(id => $(id).addEventListener('change', rerender));
   $('platform').addEventListener('change', () => { renderMethodRows(); rerender(); });
   $('reopen').onclick = rerender;
-  $('reset').onclick = () => { orders = freshOrders(); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('platform').value='desktop'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
+  $('reset').onclick = () => { orders = freshOrders(); mOver = {}; editOpen.clear(); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('platform').value='desktop'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
   $('copy').onclick = () => { navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent='Copied ✓'; setTimeout(()=>$('copy').textContent='Copy config',1500); }); };
 
   renderMethodRows();

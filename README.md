@@ -43,7 +43,7 @@ consent card** (approve/reject with a remember-my-choice duration) — see
 
 These are the only symbols and shapes covered by SemVer. Anything else in `src/` or `dist/` is internal and may change in a patch release.
 
-- `MILL.open(options)` — options: `theme`, `methods`, `moreMethods`, `moreLabel`, `platforms`, `platform`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
+- `MILL.open(options)` — options: `theme`, `methods`, `moreMethods`, `moreLabel`, `methodOverrides`, `platforms`, `platform`, `onConnected`, `onClose`, `amberCallback`, `appName`, `oauthShim`, `pomegranate`, `header`, `footer`, `tip`
 - `MILL.restore({ method, pubkey })`
 - `MILL.openSettings()` — per-kind signing permissions (private-key signing only)
 - `MILL.installAsWindowNostr(signer)`
@@ -156,6 +156,28 @@ Method ids: `nip07`, `nip46`, `nip55`, `privatekey`, `readonly`, `newkey`,
 main list, so it never appears twice — even with the default `methods` you can
 push, say, `readonly` into the dropdown by naming it in `moreMethods` alone. Omit
 `methods` to keep the default main set; omit `moreMethods` for a single flat list.
+
+### Customising a method's label, badge, and color
+
+Each card's text and badge are editable. `methodOverrides` is a per-id map applied
+to a method **wherever it appears** (main, More, and every platform), so you set it
+once. Fields: `label`, `sub`, `desc`, `icon`, `secLabel` (the "Easiest" /
+"Recommended" pill text), `secColor` (its color — any CSS color: hex, `rgb()`,
+named, or `var(--mill-…)`).
+
+```js
+MILL.open({
+  methodOverrides: {
+    nip07:       { secLabel: 'Top pick', secColor: '#ff4488' },
+    pomegranate: { label: 'Sign in with Google', sub: 'no keys to manage', secLabel: 'Easiest' },
+    readonly:    { secLabel: '' },          // '' hides the badge
+  },
+});
+```
+
+(You can also override inline per entry — `methods: [{ id: 'nip07', secLabel: 'Best' }]`
+— but `methodOverrides` stays DRY across platforms.) `examples/playground.html` has
+an inline editor (the ✎ on each method) for label / sub / badge text / badge color.
 
 ### Platform-specific layouts
 

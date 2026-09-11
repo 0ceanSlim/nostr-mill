@@ -910,12 +910,18 @@ function renderMethodSelection(host, onSelect, opts = {}) {
   const drivePinAvailable    = !!host?.getAttribute?.('oauth-shim');
   const googleAvailable      = pomegranateAvailable || drivePinAvailable;
   // Turn a 'nip07' string or { id, label?, icon?, … } override into a full method
-  // definition. Unknown ids drop out.
+  // definition. Unknown ids drop out. Overridable fields: label, sub, desc, icon,
+  // secLabel (the "Easiest"/"Recommended" pill text), secColor (its color).
+  // `opts.methodOverrides` is a per-id map applied to EVERY occurrence (main, more,
+  // and all platforms), so a custom label/color is set once and stays DRY; a
+  // per-entry object still wins over it.
+  const overrides = opts.methodOverrides || {};
   const resolveEntry = entry => {
     const id = typeof entry === 'string' ? entry : entry?.id;
     const base = METHODS_LIST.find(m => m.id === id);
     if (!base) return null;
-    return typeof entry === 'object' ? { ...base, ...entry } : base;
+    const perEntry = (entry && typeof entry === 'object') ? entry : {};
+    return { ...base, ...(overrides[id] || {}), ...perEntry };
   };
   const explicit = Array.isArray(methodFilter) && methodFilter.length;
   const resolved = explicit
@@ -1002,11 +1008,14 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     card.appendChild(mid);
 
     const right = h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', flexShrink: '0' } });
-    if (!isCompact && !isGrid) {
+    if (!isCompact && !isGrid && m.secLabel) {
       const secBadge = h('span', { class: 'mill-method-badge' }, m.secLabel);
-      secBadge.style.color = m.secColor;
-      secBadge.style.background = m.secColor.replace(')', ' / 0.12)').replace('var(', 'color-mix(in srgb, var(');
-      secBadge.style.borderColor = m.secColor + '44';
+      const c = m.secColor || 'var(--mill-muted)';
+      // color-mix works for any color form (var(), hex, rgb, named) — a custom
+      // hex/named badge color tints correctly, not just the built-in var()s.
+      secBadge.style.color = c;
+      secBadge.style.background = `color-mix(in srgb, ${c} 12%, transparent)`;
+      secBadge.style.borderColor = `color-mix(in srgb, ${c} 30%, transparent)`;
       right.appendChild(secBadge);
     }
     right.appendChild(h('span', { class: 'mill-arrow' }, '→'));
@@ -3039,6 +3048,7 @@ class NostrSignerElement extends HTMLElement {
     if (eff.theme)        this._applyTheme(eff.theme);
     this._state.methodFilter = eff.methods;            // undefined → defaults
     this._state.moreMethods  = eff.moreMethods;        // methods to tuck under a "More options" disclosure
+    this._state.methodOverrides = eff.methodOverrides; // per-id label/sub/secLabel/secColor overrides
     this._state.moreLabel    = eff.moreLabel;          // label for that disclosure (default "More options")
     this._state.density      = eff.density;            // undefined → comfortable
     this._state.layout       = eff.layout;             // undefined → list
@@ -3223,6 +3233,7 @@ class NostrSignerElement extends HTMLElement {
         methodFilter: this._state.methodFilter,
         moreMethods:  this._state.moreMethods,
         moreLabel:    this._state.moreLabel,
+        methodOverrides: this._state.methodOverrides,
         density:      this._state.density,
         layout:       this._state.layout,
         callout:      this._state.callout,
