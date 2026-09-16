@@ -391,8 +391,8 @@ const BASE_CSS = `
     display: flex; align-items: center; justify-content: center;
     font-size: 20px; flex-shrink: 0;
   }
-  .mill-method-name  { font-size: 14.5px; font-weight: 600; color: var(--mill-text); }
-  .mill-method-sub   { font-size: 11px; color: var(--mill-muted); font-family: var(--mill-font-mono); }
+  .mill-method-name  { font-size: 14.5px; font-weight: 600; color: var(--mill-text); overflow-wrap: anywhere; }
+  .mill-method-sub   { font-size: 11px; color: var(--mill-muted); font-family: var(--mill-font-mono); overflow-wrap: anywhere; }
   .mill-method-desc  { font-size: 12px; color: var(--mill-text-secondary); line-height: 1.5; margin-top: 2px; }
   .mill-method-badge {
     font-size: 11px; font-weight: 600; border-radius: var(--mill-radius);
@@ -563,6 +563,10 @@ const BASE_CSS = `
 
   /* Narrow viewports: stack the pills under the label so nothing overflows.
      Rules must live here (not inline) so this media query can win. */
+  @media (max-width: 400px) {
+    /* Narrow: drop the security pill so the method name keeps its width. */
+    .mill-method-badge { display: none; }
+  }
   @media (max-width: 460px) {
     .mill-grant-row { flex-direction: column; align-items: stretch; gap: 8px; }
     .mill-grant-actions { width: 100%; }
@@ -993,6 +997,20 @@ function renderMethodSelection(host, onSelect, opts = {}) {
 
   // Build one method card. Shared by the main list and the "More options" section.
   const makeCard = m => {
+    // Grid: compact vertical tile (icon over name), so 2–3 fit a row without
+    // overflow. `min-width:0` lets the grid track shrink (grid items default to
+    // min-width:auto, which is what pushed cards past the modal edge).
+    if (isGrid) {
+      const tile = h('button', {
+        class: 'mill-method-card',
+        style: { flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '8px', minWidth: '0', padding: isCompact ? '12px 8px' : '16px 10px' },
+        onClick: () => onSelect(m.id),
+      });
+      tile.appendChild(h('div', { class: 'mill-method-icon', style: { width: isCompact ? '30px' : '36px', height: isCompact ? '30px' : '36px', fontSize: '18px' } }, iconNode(m.icon, isCompact ? 17 : 20)));
+      tile.appendChild(h('div', { class: 'mill-method-name', style: { fontSize: '13px', lineHeight: '1.25', overflowWrap: 'anywhere' } }, m.label));
+      if (m.sub) tile.appendChild(h('div', { class: 'mill-method-sub', style: { fontSize: '10.5px', overflowWrap: 'anywhere' } }, m.sub));
+      return tile;
+    }
     const card = h('button', {
       class: 'mill-method-card',
       style: isCompact ? { padding: '10px 12px', gap: '10px' } : {},
