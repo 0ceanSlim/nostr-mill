@@ -41,6 +41,10 @@
   .fieldset { border: 1px solid #2a2540; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .fieldset > .row:last-child { margin-bottom: 0; }
   .rangeval { color: #b9a6ff; font-weight: 600; }
+  .subrow { display: flex; gap: 6px; align-items: center; }
+  .flink { display: flex; gap: 6px; margin-bottom: 6px; }
+  .flink input { flex: 1; min-width: 0; }
+  .flink button { border: 1px solid #332c50; background: transparent; color: #8a83ad; border-radius: 6px; cursor: pointer; padding: 0 9px; flex: 0 0 auto; }
 
   /* method rows */
   .m-row { display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid #2a2540; border-radius: 8px; margin-bottom: 6px; background: #16132339; }
@@ -152,7 +156,12 @@
 
     <div class="fieldset">
       <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="footerOn" checked /> footer</label><label><input type="checkbox" id="footerAttr" checked /> "Signer by MILL"</label></div>
-      <div class="row" style="margin-bottom:0"><label>Footer text</label><input type="text" id="footerText" placeholder="Your keys · Your data" /></div>
+      <div class="row" style="margin-bottom:8px"><label>Footer text</label><input type="text" id="footerText" placeholder="Your keys · Your data" /></div>
+      <div class="row" style="margin-bottom:0">
+        <label>Links (Terms / Privacy / …)</label>
+        <div id="footerLinks"></div>
+        <button id="addLink" class="copy" style="margin-top:6px">+ Add link</button>
+      </div>
     </div>
 
     <div class="row">
@@ -211,6 +220,12 @@
   // Per-method text/color overrides (global, applied wherever the method appears).
   let mOver = {};                 // id -> { label?, sub?, secLabel?, secColor? }
   const editOpen = new Set();     // ids whose inline editor is expanded
+  // Footer links (Terms / Privacy / …) — mill's footer.links. Seeded so they
+  // show by default; edit or remove freely.
+  let footerLinks = [
+    { label: 'Terms',   href: 'https://yourapp.com/terms' },
+    { label: 'Privacy', href: 'https://yourapp.com/privacy' },
+  ];
   const setOver = (id, field, val) => {
     mOver[id] = mOver[id] || {};
     if (val.trim()) mOver[id][field] = val.trim(); else delete mOver[id][field];
@@ -252,6 +267,21 @@
     colorCtrls.forEach(c => { if (c.on.checked) ov[c.token] = c.pick.value; });
     if (Object.keys(ov).length) return { theme: { ...base, ...ov }, name: null };
     return THEME_PRESETS[val] ? { theme: base, name: null } : { theme: val, name: val };
+  }
+
+  // Footer link rows (label + href + remove). Typing mutates the link object and
+  // only rerenders the preview, so the field keeps focus.
+  function renderFooterLinks() {
+    const box = $('footerLinks'); box.innerHTML = '';
+    footerLinks.forEach((lk, i) => {
+      const row = document.createElement('div'); row.className = 'flink';
+      const l = document.createElement('input'); l.type = 'text'; l.placeholder = 'Label'; l.value = lk.label || '';
+      const h = document.createElement('input'); h.type = 'text'; h.placeholder = 'https://…'; h.value = lk.href || '';
+      l.addEventListener('input', () => { lk.label = l.value; rerender(); });
+      h.addEventListener('input', () => { lk.href = h.value; rerender(); });
+      const rm = document.createElement('button'); rm.textContent = '×'; rm.title = 'Remove'; rm.onclick = () => { footerLinks.splice(i, 1); renderFooterLinks(); rerender(); };
+      row.appendChild(l); row.appendChild(h); row.appendChild(rm); box.appendChild(row);
+    });
   }
 
   // Header object from the custom-header fields (empty field = keep mill's default).
@@ -331,8 +361,13 @@
     const baseMore = bucket(base, 'more');
     if (baseMore.length) { cfg.moreMethods = baseMore; const lbl = $('moreLabel').value.trim(); if (lbl && lbl !== 'More options') cfg.moreLabel = lbl; }
     const hdr = headerConfig(); if (hdr) cfg.header = hdr;
-    if ($('footerOn').checked) { const f = { attribution: $('footerAttr').checked }; const ft = $('footerText').value.trim(); if (ft) f.text = ft; cfg.footer = f; }
-    else cfg.footer = { attribution: false };
+    if ($('footerOn').checked) {
+      const f = { attribution: $('footerAttr').checked };
+      const ft = $('footerText').value.trim(); if (ft) f.text = ft;
+      const links = footerLinks.filter(lk => (lk.label || '').trim()).map(lk => ({ label: lk.label.trim(), href: (lk.href || '').trim() }));
+      if (links.length) f.links = links;
+      cfg.footer = f;
+    } else cfg.footer = { attribution: false };
     // Per-platform overrides: only for platforms whose arrangement differs from desktop.
     const platforms = {};
     ['android', 'ios'].forEach(p => {
@@ -362,7 +397,13 @@
     if (cfg.tip === false) lines.push('  tip: false,');
     else if (typeof cfg.tip === 'string') lines.push('  tip: ' + q(cfg.tip) + ',');
     if (cfg.header) lines.push('  header: { ' + Object.entries(cfg.header).map(([k, v]) => `${k}: ${q(v)}`).join(', ') + ' },');
-    if (cfg.footer) { const p = []; if (cfg.footer.text) p.push('text: ' + q(cfg.footer.text)); p.push('attribution: ' + cfg.footer.attribution); lines.push('  footer: { ' + p.join(', ') + ' },'); }
+    if (cfg.footer) {
+      const p = [];
+      if (cfg.footer.text) p.push('text: ' + q(cfg.footer.text));
+      if (cfg.footer.links) p.push('links: [' + cfg.footer.links.map(lk => `{ label: ${q(lk.label)}, href: ${q(lk.href)} }`).join(', ') + ']');
+      p.push('attribution: ' + cfg.footer.attribution);
+      lines.push('  footer: { ' + p.join(', ') + ' },');
+    }
     if (cfg.platforms) {
       lines.push('  platforms: {');
       for (const [p, o] of Object.entries(cfg.platforms)) {
@@ -402,6 +443,7 @@
     const br = parseInt(b['--mill-radius'] || '14', 10); $('radius').value = br; $('radiusVal').textContent = br;
   });
   $('headerOn').addEventListener('change', () => { $('headerFields').hidden = !$('headerOn').checked; rerender(); });
+  $('addLink').onclick = () => { footerLinks.push({ label: '', href: '' }); renderFooterLinks(); rerender(); };
   $('platform').addEventListener('change', () => { renderMethodRows(); rerender(); });
   $('reopen').onclick = rerender;
   $('reset').onclick = () => {
@@ -412,11 +454,14 @@
     $('callout').checked = true; $('tipText').value = ''; $('tipOff').checked = false;
     $('headerOn').checked = false; $('headerFields').hidden = true; ['h_label','h_logo','h_eyebrow','h_title','h_message'].forEach(id => $(id).value = ''); $('h_align').value = 'left';
     $('footerOn').checked = true; $('footerAttr').checked = true; $('footerText').value = ''; $('moreLabel').value = 'More options';
+    footerLinks = [{ label: 'Terms', href: 'https://yourapp.com/terms' }, { label: 'Privacy', href: 'https://yourapp.com/privacy' }];
+    renderFooterLinks();
     renderMethodRows(); rerender();
   };
   $('copy').onclick = () => { navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent='Copied ✓'; setTimeout(()=>$('copy').textContent='Copy config',1500); }); };
 
   renderColorRows();
+  renderFooterLinks();
   renderMethodRows();
   rerender();
 </script>
