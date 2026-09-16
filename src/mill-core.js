@@ -983,8 +983,12 @@ function renderMethodSelection(host, onSelect, opts = {}) {
 
   const isCompact = density === 'compact';
   const isGrid    = layout === 'grid';
-  const listStyle = () => isGrid
-    ? { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: isCompact ? '8px' : '10px' }
+  // Grid columns fit the count: up to 3 stay on one row (2→2, 3→3); 4+ wrap to a
+  // balanced grid capped at 3 wide (4→2×2, 5→3+2, 6→3×3), so there's no lone card
+  // in a half-empty row.
+  const gridCols = n => n <= 3 ? Math.max(1, n) : Math.min(3, Math.ceil(n / 2));
+  const listStyle = n => isGrid
+    ? { display: 'grid', gridTemplateColumns: `repeat(${gridCols(n)}, 1fr)`, gap: isCompact ? '8px' : '10px' }
     : { display: 'flex', flexDirection: 'column', gap: isCompact ? '6px' : '10px' };
 
   // Build one method card. Shared by the main list and the "More options" section.
@@ -1023,7 +1027,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     return card;
   };
 
-  const list = h('div', { style: listStyle() });
+  const list = h('div', { style: listStyle(signInList.length) });
   signInList.forEach(m => list.appendChild(makeCard(m)));
   wrap.appendChild(list);
 
@@ -1034,7 +1038,7 @@ function renderMethodSelection(host, onSelect, opts = {}) {
     const shownDisplay = isGrid ? 'grid' : 'flex';
     // Start collapsed. Toggle `display` directly — the list style already sets an
     // inline `display`, which would override the [hidden] attribute.
-    const moreList = h('div', { style: { ...listStyle(), marginTop: '10px', display: 'none' } });
+    const moreList = h('div', { style: { ...listStyle(moreResolved.length), marginTop: '10px', display: 'none' } });
     moreResolved.forEach(m => moreList.appendChild(makeCard(m)));
     const caret = h('span', {}, '▸');
     const toggle = h('button', {
