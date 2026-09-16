@@ -34,6 +34,13 @@
   }
   .checks { display: flex; flex-wrap: wrap; gap: 10px; }
   .checks label { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: #cfc9e8; }
+  .colors { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .colors label.c { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #cfc9e8; }
+  .colors input[type=color] { width: 26px; height: 22px; padding: 0; border: 1px solid #332c50; border-radius: 4px; background: #1a1728; flex: 0 0 auto; }
+  input[type=range] { width: 100%; accent-color: #6b4bff; }
+  .fieldset { border: 1px solid #2a2540; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .fieldset > .row:last-child { margin-bottom: 0; }
+  .rangeval { color: #b9a6ff; font-weight: 600; }
 
   /* method rows */
   .m-row { display: flex; align-items: center; gap: 6px; padding: 6px; border: 1px solid #2a2540; border-radius: 8px; margin-bottom: 6px; background: #16132339; }
@@ -91,6 +98,20 @@
       </select>
     </div>
 
+    <div class="fieldset">
+      <div class="row" style="margin-bottom:8px">
+        <label>Corner radius: <span class="rangeval" id="radiusVal">14</span>px</label>
+        <input type="range" id="radius" min="0" max="28" value="14" />
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <label>Color overrides <span style="color:#6a6390;text-transform:none;font-weight:400">(tick to override the theme)</span></label>
+        <div class="colors" id="colors"></div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="flat" /> flat (no shadow / glow / blur)</label>
+      </div>
+    </div>
+
     <div class="row">
       <label>Layout</label>
       <select id="layout"><option value="list">list</option><option value="grid">grid</option></select>
@@ -107,13 +128,31 @@
     </div>
 
     <div class="row">
-      <label>Toggles</label>
       <div class="checks">
         <label><input type="checkbox" id="callout" checked /> "I'm new here" callout</label>
-        <label><input type="checkbox" id="tip" checked /> tip line</label>
-        <label><input type="checkbox" id="header" /> sample header</label>
-        <label><input type="checkbox" id="footer" checked /> footer</label>
       </div>
+    </div>
+
+    <div class="fieldset">
+      <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="headerOn" /> custom header</label></div>
+      <div id="headerFields" hidden>
+        <div class="row" style="margin-bottom:6px"><label>Top label</label><input type="text" id="h_label" placeholder="Account Access" /></div>
+        <div class="row" style="margin-bottom:6px"><label>Logo (emoji or image URL)</label><input type="text" id="h_logo" placeholder="⚡" /></div>
+        <div class="row" style="margin-bottom:6px"><label>Eyebrow</label><input type="text" id="h_eyebrow" placeholder="Nostr Signer" /></div>
+        <div class="row" style="margin-bottom:6px"><label>Title</label><input type="text" id="h_title" placeholder="Connect Your Account" /></div>
+        <div class="row" style="margin-bottom:6px"><label>Message</label><input type="text" id="h_message" placeholder="Choose how to access…" /></div>
+        <div class="row" style="margin-bottom:0"><label>Align</label><select id="h_align"><option value="left">left</option><option value="center">center</option></select></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>Tip line</label>
+      <div class="subrow"><input type="text" id="tipText" placeholder="Not sure? NIP-07 is recommended." /><label style="font-size:11.5px;color:#cfc9e8;white-space:nowrap"><input type="checkbox" id="tipOff" /> hide</label></div>
+    </div>
+
+    <div class="fieldset">
+      <div class="checks" style="margin-bottom:8px"><label><input type="checkbox" id="footerOn" checked /> footer</label><label><input type="checkbox" id="footerAttr" checked /> "Signer by MILL"</label></div>
+      <div class="row" style="margin-bottom:0"><label>Footer text</label><input type="text" id="footerText" placeholder="Your keys · Your data" /></div>
     </div>
 
     <div class="row">
@@ -146,8 +185,16 @@
     'terminal': { '--mill-bg':'#000000','--mill-surface':'#020a02','--mill-card':'#031003','--mill-card-hover':'#062406','--mill-border':'#00ff00','--mill-border-light':'#00ff00','--mill-accent':'#00ff00','--mill-accent-dim':'#001a00','--mill-teal':'#00ffaa','--mill-text':'#00ff00','--mill-text-secondary':'#00aa00','--mill-muted':'#007700','--mill-radius':'0px','--mill-shadow':'none','--mill-font':"'JetBrains Mono', ui-monospace, monospace",'--mill-font-mono':"'JetBrains Mono', ui-monospace, monospace" },
     'soft': { '--mill-bg':'#f6f4ff','--mill-surface':'#ffffff','--mill-card':'#faf9ff','--mill-card-hover':'#efeaff','--mill-border':'#e6e0f7','--mill-border-light':'#d3cbee','--mill-accent':'#7c5cff','--mill-accent-dim':'#efeaff','--mill-teal':'#3fb6c9','--mill-text':'#1a1633','--mill-text-secondary':'#5a5480','--mill-muted':'#9992b8','--mill-radius':'20px','--mill-shadow':'0 20px 60px rgba(124,92,255,0.20)','--mill-font':"'Inter', system-ui, sans-serif",'--mill-font-mono':"ui-monospace, monospace" },
   };
-  const SAMPLE_HEADER = { logo: '🌾', title: 'Wheat', message: 'Sign in to the tavern.', align: 'center' };
-  const SAMPLE_FOOTER = { text: 'Your keys · Your data', links: [{ label: 'Terms', href: '#' }, { label: 'Privacy', href: '#' }], attribution: true };
+  // Color overrides layered on top of the base theme (tick to apply).
+  const COLORS = [
+    { token: '--mill-accent',  label: 'Accent',     def: '#7c5cff' },
+    { token: '--mill-bg',      label: 'Background',  def: '#0b0a12' },
+    { token: '--mill-surface', label: 'Surface',    def: '#141222' },
+    { token: '--mill-card',    label: 'Card',       def: '#1b1830' },
+    { token: '--mill-text',    label: 'Text',       def: '#e8e4f5' },
+    { token: '--mill-border',  label: 'Border',     def: '#2a2540' },
+  ];
+  const colorCtrls = [];
 
   const METHOD_LABELS = {
     pomegranate: 'Google (pomegranate)', nip07: 'Browser Extension (NIP-07)', nip46: 'Remote Signer (NIP-46)',
@@ -175,6 +222,46 @@
   const order = () => orders[curPlat()];
   const bucket = (arr, place) => arr.filter(m => m.place === place).map(m => m.id);
   const sameLists = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // Build the color-override rows once (checkbox + native color picker).
+  function renderColorRows() {
+    const box = $('colors');
+    COLORS.forEach(c => {
+      const on = document.createElement('input'); on.type = 'checkbox';
+      const pick = document.createElement('input'); pick.type = 'color'; pick.value = c.def;
+      on.addEventListener('change', rerender); pick.addEventListener('input', () => { on.checked = true; rerender(); });
+      const lab = document.createElement('label'); lab.className = 'c';
+      lab.appendChild(on); lab.appendChild(pick); lab.appendChild(document.createTextNode(c.label));
+      box.appendChild(lab);
+      colorCtrls.push({ token: c.token, on, pick });
+    });
+  }
+
+  // Resolve the theme: base (built-in name or preset object) plus radius / flat /
+  // color overrides. Returns { theme, name } — name is set only for a pristine
+  // built-in (so the config can stay `theme: 'dark'`); otherwise a full object.
+  function themeConfig() {
+    const val = $('theme').value;
+    const M = window.MILL || {};
+    const base = THEME_PRESETS[val] || (M.themes && M.themes[val]) || (M.themes && M.themes.dark) || {};
+    const ov = {};
+    const baseRadius = parseInt(base['--mill-radius'] || '14', 10);
+    const r = parseInt($('radius').value, 10);
+    if (r !== baseRadius) ov['--mill-radius'] = r + 'px';
+    if ($('flat').checked) { ov['--mill-shadow'] = 'none'; ov['--mill-glow'] = 'transparent'; ov['--mill-overlay-blur'] = '0px'; }
+    colorCtrls.forEach(c => { if (c.on.checked) ov[c.token] = c.pick.value; });
+    if (Object.keys(ov).length) return { theme: { ...base, ...ov }, name: null };
+    return THEME_PRESETS[val] ? { theme: base, name: null } : { theme: val, name: val };
+  }
+
+  // Header object from the custom-header fields (empty field = keep mill's default).
+  function headerConfig() {
+    if (!$('headerOn').checked) return undefined;
+    const h = { align: $('h_align').value };
+    [['label','h_label'],['logo','h_logo'],['eyebrow','h_eyebrow'],['title','h_title'],['message','h_message']]
+      .forEach(([k, id]) => { const v = $(id).value.trim(); if (v) h[k] = v; });
+    return h;
+  }
 
   function renderMethodRows() {
     $('platLabel').textContent = curPlat();
@@ -229,22 +316,23 @@
   }
 
   function buildConfig() {
-    const themeVal = $('theme').value;
-    const theme = THEME_PRESETS[themeVal] || themeVal;
+    const tc = themeConfig();
     const base = orders.desktop;
     const cfg = {
-      theme,
+      theme: tc.theme,
       layout: $('layout').value,
       density: $('density').value,
       methods: bucket(base, 'main'),
       pomegranate: true,
       callout: $('callout').checked ? 'newkey' : false,
-      tip: $('tip').checked ? undefined : false,
     };
+    if ($('tipOff').checked) cfg.tip = false;
+    else { const t = $('tipText').value.trim(); if (t) cfg.tip = t; }
     const baseMore = bucket(base, 'more');
     if (baseMore.length) { cfg.moreMethods = baseMore; const lbl = $('moreLabel').value.trim(); if (lbl && lbl !== 'More options') cfg.moreLabel = lbl; }
-    if ($('header').checked) cfg.header = SAMPLE_HEADER;
-    cfg.footer = $('footer').checked ? SAMPLE_FOOTER : { attribution: false };
+    const hdr = headerConfig(); if (hdr) cfg.header = hdr;
+    if ($('footerOn').checked) { const f = { attribution: $('footerAttr').checked }; const ft = $('footerText').value.trim(); if (ft) f.text = ft; cfg.footer = f; }
+    else cfg.footer = { attribution: false };
     // Per-platform overrides: only for platforms whose arrangement differs from desktop.
     const platforms = {};
     ['android', 'ios'].forEach(p => {
@@ -256,13 +344,15 @@
     });
     if (Object.keys(platforms).length) cfg.platforms = platforms;
     if (Object.keys(mOver).length) cfg.methodOverrides = mOver;
-    return { cfg, themeName: THEME_PRESETS[themeVal] ? null : themeVal };
+    return { cfg, themeName: tc.name };
   }
 
   function toCode(cfg, themeName) {
     const arr = a => '[' + a.map(m => `'${m}'`).join(', ') + ']';
+    const q = v => `'${String(v).replace(/'/g, "\\'")}'`;
     const lines = ['MILL.open({'];
-    lines.push('  theme: ' + (themeName ? `'${themeName}'` : '{ ' + Object.entries(cfg.theme).map(([k,v]) => `'${k}': '${v}'`).join(', ') + ' }') + ',');
+    if (themeName) lines.push(`  theme: '${themeName}',`);
+    else { lines.push('  theme: {'); Object.entries(cfg.theme).forEach(([k, v]) => lines.push(`    '${k}': '${v}',`)); lines.push('  },'); }
     lines.push(`  layout: '${cfg.layout}',`);
     lines.push(`  density: '${cfg.density}',`);
     lines.push('  methods: ' + arr(cfg.methods) + ',');
@@ -270,7 +360,9 @@
     if (cfg.moreLabel) lines.push(`  moreLabel: '${cfg.moreLabel}',`);
     if (cfg.callout === false) lines.push('  callout: false,');
     if (cfg.tip === false) lines.push('  tip: false,');
-    if (cfg.header) lines.push('  header: ' + JSON.stringify(cfg.header) + ',');
+    else if (typeof cfg.tip === 'string') lines.push('  tip: ' + q(cfg.tip) + ',');
+    if (cfg.header) lines.push('  header: { ' + Object.entries(cfg.header).map(([k, v]) => `${k}: ${q(v)}`).join(', ') + ' },');
+    if (cfg.footer) { const p = []; if (cfg.footer.text) p.push('text: ' + q(cfg.footer.text)); p.push('attribution: ' + cfg.footer.attribution); lines.push('  footer: { ' + p.join(', ') + ' },'); }
     if (cfg.platforms) {
       lines.push('  platforms: {');
       for (const [p, o] of Object.entries(cfg.platforms)) {
@@ -283,7 +375,7 @@
     if (cfg.methodOverrides) {
       lines.push('  methodOverrides: {');
       for (const [id, o] of Object.entries(cfg.methodOverrides)) {
-        lines.push(`    ${id}: { ${Object.entries(o).map(([k,v]) => `${k}: '${v}'`).join(', ')} },`);
+        lines.push(`    ${id}: { ${Object.entries(o).map(([k, v]) => `${k}: ${q(v)}`).join(', ')} },`);
       }
       lines.push('  },');
     }
@@ -301,13 +393,30 @@
   }
 
   // wire controls
-  ['theme','layout','density','moreLabel'].forEach(id => $(id).addEventListener('input', rerender));
-  ['callout','tip','header','footer'].forEach(id => $(id).addEventListener('change', rerender));
+  ['theme','layout','density','moreLabel','tipText','footerText','radius','h_label','h_logo','h_eyebrow','h_title','h_message']
+    .forEach(id => $(id).addEventListener('input', rerender));
+  ['callout','tipOff','footerOn','footerAttr','flat','h_align'].forEach(id => $(id).addEventListener('change', rerender));
+  $('radius').addEventListener('input', () => { $('radiusVal').textContent = $('radius').value; });
+  $('theme').addEventListener('change', () => {
+    const M = window.MILL || {}; const b = THEME_PRESETS[$('theme').value] || (M.themes && M.themes[$('theme').value]) || {};
+    const br = parseInt(b['--mill-radius'] || '14', 10); $('radius').value = br; $('radiusVal').textContent = br;
+  });
+  $('headerOn').addEventListener('change', () => { $('headerFields').hidden = !$('headerOn').checked; rerender(); });
   $('platform').addEventListener('change', () => { renderMethodRows(); rerender(); });
   $('reopen').onclick = rerender;
-  $('reset').onclick = () => { orders = freshOrders(); mOver = {}; editOpen.clear(); $('theme').value='dark'; $('layout').value='list'; $('density').value='comfortable'; $('platform').value='desktop'; $('callout').checked=true; $('tip').checked=true; $('header').checked=false; $('footer').checked=true; $('moreLabel').value='More options'; renderMethodRows(); rerender(); };
+  $('reset').onclick = () => {
+    orders = freshOrders(); mOver = {}; editOpen.clear();
+    $('theme').value = 'dark'; $('radius').value = 14; $('radiusVal').textContent = '14'; $('flat').checked = false;
+    colorCtrls.forEach(c => { c.on.checked = false; });
+    $('layout').value = 'list'; $('density').value = 'comfortable'; $('platform').value = 'desktop';
+    $('callout').checked = true; $('tipText').value = ''; $('tipOff').checked = false;
+    $('headerOn').checked = false; $('headerFields').hidden = true; ['h_label','h_logo','h_eyebrow','h_title','h_message'].forEach(id => $(id).value = ''); $('h_align').value = 'left';
+    $('footerOn').checked = true; $('footerAttr').checked = true; $('footerText').value = ''; $('moreLabel').value = 'More options';
+    renderMethodRows(); rerender();
+  };
   $('copy').onclick = () => { navigator.clipboard.writeText($('code').textContent).then(() => { $('copy').textContent='Copied ✓'; setTimeout(()=>$('copy').textContent='Copy config',1500); }); };
 
+  renderColorRows();
   renderMethodRows();
   rerender();
 </script>
