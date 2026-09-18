@@ -77,7 +77,10 @@ function oauthPopup(url, expectOrigin, { timeoutMs = 120_000 } = {}) {
     const finish = (fn, v) => { if (done) return; done = true; cleanup(); fn(v); };
     const onMsg = e => {
       if (e.origin !== origin || e.source !== w) return;
-      if (e.data && typeof e.data === 'object') finish(resolve, e.data);
+      // `central`'s login page posts an object ({token}); an operator's recover
+      // page posts the shard as a BARE STRING. Accept either — the origin+source
+      // check above already proves the message came from the popup we opened.
+      if (e.data && (typeof e.data === 'object' || typeof e.data === 'string')) finish(resolve, e.data);
     };
     const closed = setInterval(() => { if (w.closed) finish(reject, new Error('Sign-in was cancelled.')); }, 500);
     const timer = setTimeout(() => { if (!w.closed) try { w.close(); } catch {} finish(reject, new Error('Sign-in timed out.')); }, timeoutMs);
@@ -333,7 +336,9 @@ export function isShardConflict(err) {
 export async function requestOperatorShard(operatorURL) {
   const o = massageURL(operatorURL);
   const data = await oauthPopup(`${o}/po/recover/google`, o);
-  const shard = data.shard || data.token;
+  // The operator's confirm-recovery page posts the shard as a bare hex string;
+  // tolerate an object form too in case an operator wraps it ({shard}/{token}).
+  const shard = typeof data === 'string' ? data : (data && (data.shard || data.token));
   if (!shard) throw new Error('Operator did not return a shard.');
   return shard;
 }

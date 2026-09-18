@@ -2450,6 +2450,14 @@ function renderPomegranateFlow(host, onDone, onBack) {
         const n = chosenOperators().length;
         panel.appendChild(h('div', { class: 'mill-hint' }, n >= minOperators ? `Any ${effThreshold()} of the ${n} selected operators can sign.` : `Select at least ${minOperators} operators.`));
         panel.appendChild(h('div', { class: 'mill-hint' }, 'Applies to new accounts — existing accounts keep their recorded operators.'));
+        // Import / replace a key — put a DIFFERENT key behind this Google account,
+        // or bring your own at first signup. A rare, advanced action, so it lives
+        // here next to Recover (and also on the Connected screen after sign-in).
+        // Auth runs synchronously inside this click, so the Google popup isn't
+        // blocked. proceedAt() routes: existing account → replace-confirm (import
+        // default), no account → new-account with the import toggle open.
+        panel.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
+          onClick: () => { intent = 'replace'; start(render); } }, 'Use a different key (import / replace)'));
         // Recovery lives here — a rare, advanced action.
         panel.appendChild(h('button', { class: 'mill-consent-manage', type: 'button', style: { marginTop: '2px' },
           onClick: () => { returnTo = ''; step = 'recover'; errMsg = ''; render(); } }, 'Recover my key from operators'));
